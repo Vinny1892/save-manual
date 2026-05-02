@@ -270,6 +270,44 @@
     <p class="head-id">unit_id :: {emu.id}</p>
   </section>
 
+  <section class="card ops">
+    <header class="card-head">
+      <span class="card-tag">[ ops ]</span>
+      <span class="card-meta">control surface</span>
+    </header>
+
+    <div class="ops-row">
+      <button
+        class="btn btn-power"
+        class:on={emu.enabled}
+        onclick={() => toggleEnabled(emu)}
+      >
+        {emu.enabled ? "[ disable unit ]" : "[ enable unit ]"}
+      </button>
+
+      <button class="btn" onclick={() => viewSaves(emu)}>
+        ▤ view saves
+      </button>
+
+      <button
+        class="btn"
+        onclick={() => syncNow(emu)}
+        disabled={!emu.enabled}
+      >
+        [ sync now ]
+      </button>
+
+      <button
+        class="btn btn-watch"
+        class:active={emu.watching}
+        onclick={() => toggleWatch(emu)}
+        disabled={!emu.enabled}
+      >
+        {emu.watching ? "[ halt watcher ]" : "[ engage watcher ]"}
+      </button>
+    </div>
+  </section>
+
   {#if debugMsg}
     <section class="alert">
       <span class="alert-tag">! TRACE</span>
@@ -508,44 +546,6 @@
       </div>
     </section>
   {/if}
-
-  <section class="card ops">
-    <header class="card-head">
-      <span class="card-tag">[ ops ]</span>
-      <span class="card-meta">control surface</span>
-    </header>
-
-    <div class="ops-row">
-      <button
-        class="btn btn-power"
-        class:on={emu.enabled}
-        onclick={() => toggleEnabled(emu)}
-      >
-        {emu.enabled ? "[ disable unit ]" : "[ enable unit ]"}
-      </button>
-
-      <button class="btn" onclick={() => viewSaves(emu)}>
-        ▤ view saves
-      </button>
-
-      <button
-        class="btn"
-        onclick={() => syncNow(emu)}
-        disabled={!emu.enabled}
-      >
-        [ sync now ]
-      </button>
-
-      <button
-        class="btn btn-watch"
-        class:active={emu.watching}
-        onclick={() => toggleWatch(emu)}
-        disabled={!emu.enabled}
-      >
-        {emu.watching ? "[ halt watcher ]" : "[ engage watcher ]"}
-      </button>
-    </div>
-  </section>
 {/if}
 
 <style>
