@@ -2,11 +2,20 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { open } from "@tauri-apps/plugin-dialog";
   import { emulators, type EmulatorView } from "$lib/store";
   import { derived } from "svelte/store";
+  import { onMount } from "svelte";
 
   interface DetectCandidate { path: string; label: string; }
+
+  interface TitleDbStatus {
+    count: number;
+    last_update: string | null;
+    refreshing: boolean;
+    cache_path: string;
+  }
 
   let debugMsg = $state("");
   let savingPaths = $state(false);
@@ -16,6 +25,8 @@
   let edenUuid = $state<string | null>(null);
   let procNameDraft = $state("");
   let savingProcName = $state(false);
+  let titleDb = $state<TitleDbStatus | null>(null);
+  let titleDbErr = $state("");
 
   const current = derived(
     [emulators, page],
@@ -176,6 +187,33 @@
       edenUuid = null;
     }
   }
+
+  async function loadTitleDbStatus() {
+    try {
+      titleDb = await invoke<TitleDbStatus>("title_db_status");
+    } catch (e) {
+      titleDbErr = String(e);
+    }
+  }
+
+  async function refreshTitleDb() {
+    titleDbErr = "";
+    try {
+      await invoke("refresh_title_db");
+      await loadTitleDbStatus();
+    } catch (e) {
+      titleDbErr = String(e);
+      await loadTitleDbStatus();
+    }
+  }
+
+  onMount(() => {
+    loadTitleDbStatus();
+    const unlisten = listen("title-db-status", () => loadTitleDbStatus());
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  });
 </script>
 
 <section class="topnav">
@@ -370,6 +408,44 @@
       </span>
     </div>
   </section>
+
+  {#if emu.id === "eden"}
+    <section class="card">
+      <header class="card-head">
+        <span class="card-tag">[ titledb ]</span>
+        <span class="card-meta">switch title-id ↔ name</span>
+      </header>
+
+      <div class="meta-row">
+        <span class="meta-key">entries</span>
+        <span class="meta-val" class:dim={!titleDb || titleDb.count === 0}>
+          {titleDb ? titleDb.count.toLocaleString("pt-BR") : "…"}
+        </span>
+      </div>
+      <div class="meta-row">
+        <span class="meta-key">last update</span>
+        <span class="meta-val" class:dim={!titleDb?.last_update}>
+          {titleDb?.last_update ?? "never"}
+        </span>
+      </div>
+      {#if titleDbErr}
+        <div class="meta-row error">
+          <span class="meta-key">last_error</span>
+          <span class="meta-val err">{titleDbErr}</span>
+        </div>
+      {/if}
+
+      <div class="field-actions">
+        <button
+          class="btn"
+          onclick={refreshTitleDb}
+          disabled={titleDb?.refreshing}
+        >
+          {titleDb?.refreshing ? "// downloading…" : "[ atualizar via blawar ]"}
+        </button>
+      </div>
+    </section>
+  {/if}
 
   <section class="card ops">
     <header class="card-head">
@@ -596,6 +672,7 @@
     letter-spacing: 0.05em;
     transition: all 0.14s;
     text-align: center;
+    white-space: nowrap;
   }
 
   .btn:hover:not(:disabled) {

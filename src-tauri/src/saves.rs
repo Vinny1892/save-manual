@@ -25,29 +25,60 @@ pub fn list_saves(emulator_id: &str, source_path: &str) -> Vec<SaveEntry> {
 }
 
 // ─── Eden (Switch) ──────────────────────────────────────────────────────────
-// nand/user/save/<title-id-16hex>/
+// nand/user/save/0000000000000000/<user-uuid 32-hex>/<title-id 16-hex>/
+
+fn eden_user_saves_base(nand_root: &Path) -> std::path::PathBuf {
+    nand_root.join("user").join("save").join("0000000000000000")
+}
 
 fn list_eden(nand_root: &Path) -> Vec<SaveEntry> {
-    let saves_dir = nand_root.join("user/save");
-    let Ok(dirs) = std::fs::read_dir(&saves_dir) else {
+    let base = eden_user_saves_base(nand_root);
+    let Ok(uuid_dirs) = std::fs::read_dir(&base) else {
         return vec![];
     };
-    let mut entries: Vec<SaveEntry> = dirs
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| {
-            let raw_id = e.file_name().to_string_lossy().into_owned();
-            if raw_id.len() != 16 || !raw_id.chars().all(|c| c.is_ascii_hexdigit()) {
-                return None;
+
+    // dedup by title-id; keep the entry with the latest mtime if multiple
+    // user profiles have a save for the same game
+    let mut by_id: std::collections::HashMap<String, SaveEntry> = std::collections::HashMap::new();
+
+    for uuid_entry in uuid_dirs.flatten() {
+        let uuid_path = uuid_entry.path();
+        if !uuid_path.is_dir() {
+            continue;
+        }
+        let uuid_name = uuid_entry.file_name().to_string_lossy().into_owned();
+        if uuid_name.len() != 32 || !uuid_name.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+
+        let Ok(title_dirs) = std::fs::read_dir(&uuid_path) else { continue };
+        for title_entry in title_dirs.flatten() {
+            let title_path = title_entry.path();
+            if !title_path.is_dir() {
+                continue;
             }
-            Some(SaveEntry {
+            let raw_id = title_entry.file_name().to_string_lossy().into_owned();
+            if raw_id.len() != 16 || !raw_id.chars().all(|c| c.is_ascii_hexdigit()) {
+                continue;
+            }
+            let entry = SaveEntry {
                 title: raw_id.clone(),
-                raw_id,
-                modified: dir_modified(&e.path()),
-                size_bytes: dir_size(&e.path()),
-            })
-        })
-        .collect();
+                raw_id: raw_id.clone(),
+                modified: dir_modified(&title_path),
+                size_bytes: dir_size(&title_path),
+            };
+            by_id
+                .entry(raw_id)
+                .and_modify(|cur| {
+                    if entry.modified > cur.modified {
+                        *cur = entry.clone();
+                    }
+                })
+                .or_insert(entry);
+        }
+    }
+
+    let mut entries: Vec<SaveEntry> = by_id.into_values().collect();
     entries.sort_by(|a, b| b.modified.cmp(&a.modified));
     entries
 }
@@ -162,7 +193,12 @@ pub fn get_save(emulator_id: &str, source_path: &str, raw_id: &str) -> Option<Sa
 pub fn save_fs_path(emulator_id: &str, source_path: &str, raw_id: &str) -> Option<std::path::PathBuf> {
     let root = Path::new(source_path);
     let p = match emulator_id {
-        "eden" => root.join("user/save").join(raw_id),
+        "eden" => {
+            let base = eden_user_saves_base(root);
+            std::fs::read_dir(&base).ok()?.flatten()
+                .map(|u| u.path().join(raw_id))
+                .find(|p| p.exists())?
+        }
         "rpcs3" => {
             let home = root.join("home");
             std::fs::read_dir(&home).ok()?.flatten()
@@ -186,17 +222,27 @@ pub fn delete_save(emulator_id: &str, source_path: &str, raw_id: &str) -> Result
 }
 
 pub fn sync_one(emulator_id: &str, source: &str, dest: &str, raw_id: &str) -> Result<(), String> {
+    let dest_root = Path::new(dest).join(emulator_id);
+    std::fs::create_dir_all(&dest_root).map_err(|e| e.to_string())?;
     let opts = fs_extra::dir::CopyOptions { overwrite: true, copy_inside: false, ..Default::default() };
     match emulator_id {
         "eden" => {
-            let from = Path::new(source).join("user/save").join(raw_id);
-            let to   = Path::new(dest).join("user/save");
-            std::fs::create_dir_all(&to).map_err(|e| e.to_string())?;
-            fs_extra::dir::copy(&from, &to, &opts).map(|_| ()).map_err(|e| e.to_string())
+            let base_src = eden_user_saves_base(Path::new(source));
+            let base_dst = eden_user_saves_base(&dest_root);
+            for user in std::fs::read_dir(&base_src).map_err(|e| e.to_string())?.flatten() {
+                let from = user.path().join(raw_id);
+                if from.exists() {
+                    let to = base_dst.join(user.file_name());
+                    std::fs::create_dir_all(&to).map_err(|e| e.to_string())?;
+                    return fs_extra::dir::copy(&from, &to, &opts)
+                        .map(|_| ()).map_err(|e| e.to_string());
+                }
+            }
+            Err(format!("save not found: {raw_id}"))
         }
         "rpcs3" => {
             let home_src = Path::new(source).join("home");
-            let home_dst = Path::new(dest).join("home");
+            let home_dst = dest_root.join("home");
             for user in std::fs::read_dir(&home_src).map_err(|e| e.to_string())?.flatten() {
                 let from = user.path().join("savedata").join(raw_id);
                 if from.exists() {
@@ -210,7 +256,7 @@ pub fn sync_one(emulator_id: &str, source: &str, dest: &str, raw_id: &str) -> Re
         }
         "pcsx2" => {
             let from = Path::new(source).join(raw_id);
-            let to   = Path::new(dest).join(raw_id);
+            let to   = dest_root.join(raw_id);
             std::fs::copy(&from, &to).map(|_| ()).map_err(|e| e.to_string())
         }
         _ => Err("emulator not supported".into()),

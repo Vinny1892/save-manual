@@ -11,25 +11,15 @@
     size_bytes: number;
   }
 
-  const MOCK_ENTRIES: SaveEntry[] = [
-    { raw_id: "0100152000022000", title: "Mario Kart 8 Deluxe",                      modified: "01/05/2026 22:14", size_bytes: 31_457_280 },
-    { raw_id: "01007EF00011E000", title: "The Legend of Zelda Breath of the Wild",   modified: "28/04/2026 18:03", size_bytes: 57_671_680 },
-    { raw_id: "0100000000010000", title: "Super Mario Odyssey",                      modified: "20/04/2026 11:45", size_bytes: 12_582_912 },
-    { raw_id: "01004D300C5AE000", title: "Metroid Dread",                            modified: "10/04/2026 09:30", size_bytes: 8_388_608  },
-    { raw_id: "0100F2C0115B6000", title: "Kirby and the Forgotten Land",             modified: "01/04/2026 14:20", size_bytes: 5_242_880  },
-    { raw_id: "0100ABF008968000", title: "Pokemon Scarlet",                          modified: "22/03/2026 20:55", size_bytes: 20_971_520 },
-  ];
-
   const emuId = $derived($page.params.id);
   const current = derived(
     [emulators, page],
     ([$emulators, $page]) => $emulators.find((e) => e.id === $page.params.id),
   );
 
-  let entries = $state<SaveEntry[]>(MOCK_ENTRIES);
+  let entries = $state<SaveEntry[]>([]);
   let loading = $state(false);
   let loadErr = $state("");
-  let useMock = $state(true);
   let viewMode = $state<"grid" | "list">("grid");
 
   let coverUrls = $state<Map<string, string>>(new Map());
@@ -37,7 +27,7 @@
 
   $effect(() => {
     void emuId;
-    if (!useMock) loadSaves();
+    loadSaves();
   });
 
   $effect(() => {
@@ -72,7 +62,6 @@
     artStatus = new Map();
     try {
       entries = await invoke<SaveEntry[]>("list_saves", { id: emuId });
-      useMock = false;
     } catch (err) {
       loadErr = String(err);
     } finally {
@@ -94,21 +83,14 @@
     if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
     return `${(b / 1024 / 1024).toFixed(1)} MB`;
   }
-
-  function back() {
-    goto(`/emulator/${emuId}`);
-  }
 </script>
 
 <section class="topnav">
-  <button class="back" onclick={back}>
+  <a class="back" href="/emulator/{emuId}">
     <span class="back-arrow">◀</span> back
-  </button>
+  </a>
   {#if $current}
     <span class="nav-title">{$current.name} / saves</span>
-  {/if}
-  {#if useMock}
-    <span class="mock-badge">// mock data</span>
   {/if}
   <div class="view-toggle">
     <button
@@ -138,7 +120,6 @@
 {:else}
   <p class="status-line">
     // {entries.length} save{entries.length !== 1 ? "s" : ""} found
-    {#if useMock}— <button class="inline-btn" onclick={loadSaves}>load real data</button>{/if}
   </p>
 
   {#if viewMode === "grid"}
@@ -230,6 +211,8 @@
   }
 
   .back {
+    display: inline-flex;
+    align-items: center;
     background: transparent;
     border: 1px dashed var(--border-strong);
     color: var(--text-soft);
@@ -238,6 +221,7 @@
     padding: 0.35rem 0.7rem;
     cursor: pointer;
     letter-spacing: 0.06em;
+    text-decoration: none;
     transition: all 0.14s;
   }
 
@@ -257,13 +241,6 @@
     color: var(--text-muted);
     letter-spacing: 0.1em;
     text-transform: uppercase;
-  }
-
-  .mock-badge {
-    font-size: 0.67rem;
-    color: var(--accent);
-    font-style: italic;
-    letter-spacing: 0.06em;
   }
 
   .view-toggle {
@@ -305,19 +282,6 @@
     font-style: italic;
     letter-spacing: 0.06em;
     margin: 0 0 1rem;
-  }
-
-  .inline-btn {
-    background: none;
-    border: none;
-    color: var(--accent);
-    font-family: inherit;
-    font-size: inherit;
-    font-style: inherit;
-    cursor: pointer;
-    padding: 0;
-    text-decoration: underline;
-    letter-spacing: inherit;
   }
 
   .grid {

@@ -12,15 +12,6 @@
     size_bytes: number;
   }
 
-  const MOCK_ENTRIES: SaveEntry[] = [
-    { raw_id: "0100152000022000", title: "Mario Kart 8 Deluxe",                    modified: "01/05/2026 22:14", size_bytes: 31_457_280 },
-    { raw_id: "01007EF00011E000", title: "The Legend of Zelda Breath of the Wild", modified: "28/04/2026 18:03", size_bytes: 57_671_680 },
-    { raw_id: "0100000000010000", title: "Super Mario Odyssey",                    modified: "20/04/2026 11:45", size_bytes: 12_582_912 },
-    { raw_id: "01004D300C5AE000", title: "Metroid Dread",                          modified: "10/04/2026 09:30", size_bytes: 8_388_608  },
-    { raw_id: "0100F2C0115B6000", title: "Kirby and the Forgotten Land",           modified: "01/04/2026 14:20", size_bytes: 5_242_880  },
-    { raw_id: "0100ABF008968000", title: "Pokemon Scarlet",                        modified: "22/03/2026 20:55", size_bytes: 20_971_520 },
-  ];
-
   const emuId  = $derived($page.params.id);
   const rawId  = $derived($page.params.raw_id);
   const current = derived(
@@ -50,12 +41,6 @@
     entry = null;
     coverUrl = null;
     imgOk = false;
-    const mock = MOCK_ENTRIES.find((e) => e.raw_id === rawId);
-    if (mock) {
-      entry = mock;
-      fetchCover(mock.title);
-      return;
-    }
     try {
       entry = await invoke<SaveEntry | null>("get_save_entry", { id: emuId, rawId });
       if (entry) fetchCover(entry.title);

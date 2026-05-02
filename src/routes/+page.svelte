@@ -118,7 +118,7 @@
 
   .list-head {
     display: grid;
-    grid-template-columns: 36px 1fr 110px 170px 70px;
+    grid-template-columns: 36px 1fr 110px 170px 80px;
     gap: 0.7rem;
     align-items: center;
     padding: 0.45rem 0.85rem;
@@ -147,7 +147,7 @@
 
   .row {
     display: grid;
-    grid-template-columns: 36px 1fr 110px 170px 70px;
+    grid-template-columns: 36px 1fr 110px 170px 80px;
     gap: 0.7rem;
     align-items: center;
     padding: 0.7rem 0.85rem;
@@ -235,6 +235,8 @@
     cursor: pointer;
     transition: all 0.14s;
     text-align: center;
+    white-space: nowrap;
+    width: 100%;
   }
 
   .power-btn:hover {

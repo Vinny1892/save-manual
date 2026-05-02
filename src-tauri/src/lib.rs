@@ -2,6 +2,7 @@ mod db;
 mod detect;
 mod saves;
 mod sync;
+mod titledb;
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -30,6 +31,9 @@ pub struct AppData {
     conn: Connection,
     watchers: HashMap<String, WatcherEntry>,
     proc_watchers: HashMap<String, ProcWatcherEntry>,
+    titles: titledb::TitleDb,
+    title_db_path: std::path::PathBuf,
+    title_db_refreshing: bool,
 }
 
 type AppState = Mutex<AppData>;
@@ -76,20 +80,30 @@ async fn set_emulator_paths(
     id: String,
     source_path: String,
     dest_path: String,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let s = state.lock().await;
-    db::set_paths(&s.conn, &id, &source_path, &dest_path)
+    {
+        let s = state.lock().await;
+        db::set_paths(&s.conn, &id, &source_path, &dest_path)?;
+    }
+    emit_changed(&app, &state, &id).await;
+    Ok(())
 }
 
 #[tauri::command]
 async fn set_process_name(
     id: String,
     process_name: String,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let s = state.lock().await;
-    db::set_process_name(&s.conn, &id, &process_name)
+    {
+        let s = state.lock().await;
+        db::set_process_name(&s.conn, &id, &process_name)?;
+    }
+    emit_changed(&app, &state, &id).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -290,14 +304,22 @@ async fn stop_proc_watch(
 
 #[tauri::command]
 async fn list_saves(id: String, state: State<'_, AppState>) -> Result<Vec<saves::SaveEntry>, String> {
-    let source = {
+    let (source, titles) = {
         let s = state.lock().await;
-        db::get(&s.conn, &id)?.source_path
+        (db::get(&s.conn, &id)?.source_path, s.titles.map.clone())
     };
     if source.is_empty() {
         return Err("Configuração incompleta".into());
     }
-    Ok(saves::list_saves(&id, &source))
+    let mut entries = saves::list_saves(&id, &source);
+    if id == "eden" {
+        for e in &mut entries {
+            if let Some(name) = titles.get(&e.raw_id.to_uppercase()) {
+                e.title = name.clone();
+            }
+        }
+    }
+    Ok(entries)
 }
 
 #[tauri::command]
@@ -318,14 +340,24 @@ async fn get_save_entry(
     raw_id: String,
     state: State<'_, AppState>,
 ) -> Result<Option<saves::SaveEntry>, String> {
-    let source = {
+    let (source, titles) = {
         let s = state.lock().await;
-        db::get(&s.conn, &id)?.source_path
+        (db::get(&s.conn, &id)?.source_path, s.titles.map.clone())
     };
     if source.is_empty() {
         return Err("Configuração incompleta".into());
     }
-    Ok(saves::get_save(&id, &source, &raw_id))
+    let mut entry = saves::get_save(&id, &source, &raw_id);
+    if id == "eden" {
+        if let Some(e) = entry.as_mut() {
+            if let Some(name) = titles.get(&e.raw_id.to_uppercase()) {
+                e.title = name.clone();
+            } else if let Some(name) = titledb::fetch_nlib_name(&e.raw_id).await {
+                e.title = name;
+            }
+        }
+    }
+    Ok(entry)
 }
 
 #[tauri::command]
@@ -427,6 +459,59 @@ async fn detect_save_paths(id: String) -> Result<Vec<detect::DetectCandidate>, S
 }
 
 #[tauri::command]
+async fn title_db_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let s = state.lock().await;
+    let last_update = s
+        .titles
+        .last_update
+        .map(|t| t.format("%d/%m/%Y %H:%M").to_string());
+    Ok(serde_json::json!({
+        "count": s.titles.map.len(),
+        "last_update": last_update,
+        "refreshing": s.title_db_refreshing,
+        "cache_path": s.title_db_path.to_string_lossy(),
+    }))
+}
+
+#[tauri::command]
+async fn refresh_title_db(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let target = {
+        let mut s = state.lock().await;
+        if s.title_db_refreshing {
+            return Err("já em andamento".into());
+        }
+        s.title_db_refreshing = true;
+        s.title_db_path.clone()
+    };
+    let _ = app.emit("title-db-status", "refreshing");
+
+    let outcome = async {
+        titledb::download(&target).await?;
+        let map = titledb::parse(&target)?;
+        Ok::<_, String>(map)
+    }
+    .await;
+
+    let mut s = state.lock().await;
+    s.title_db_refreshing = false;
+    match outcome {
+        Ok(map) => {
+            s.titles.map = std::sync::Arc::new(map);
+            s.titles.last_update = titledb::cache_mtime(&s.title_db_path);
+            let _ = app.emit("title-db-status", "ready");
+            Ok(())
+        }
+        Err(e) => {
+            let _ = app.emit("title-db-status", format!("error: {}", e));
+            Err(e)
+        }
+    }
+}
+
+#[tauri::command]
 async fn get_eden_uuid(nand_path: String) -> Result<Option<String>, String> {
     Ok(sync::read_eden_uuid(std::path::Path::new(&nand_path)))
 }
@@ -444,10 +529,12 @@ async fn stop_proc_watch_inner(id: &str, state: &State<'_, AppState>) -> Result<
 }
 
 fn do_sync(id: &str, source: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+    let emu_dest = dest.join(id);
+    std::fs::create_dir_all(&emu_dest).map_err(|e| e.to_string())?;
     if id == "eden" {
-        copy_eden_saves(source, dest)
+        copy_eden_saves(source, &emu_dest)
     } else {
-        copy_saves(source, dest)
+        copy_saves(source, &emu_dest)
     }
 }
 
@@ -481,11 +568,60 @@ pub fn run() {
             std::fs::create_dir_all(&app_data_dir).ok();
             let db_path = app_data_dir.join("save-sync.db");
             let conn = db::open(&db_path).expect("falha ao abrir DB");
+            let title_db_path = titledb::cache_path(&app_data_dir);
+
             app.manage(Mutex::new(AppData {
                 conn,
                 watchers: HashMap::new(),
                 proc_watchers: HashMap::new(),
+                titles: titledb::TitleDb::default(),
+                title_db_path: title_db_path.clone(),
+                title_db_refreshing: false,
             }));
+
+            // Background: load existing cache (or download on first run), then
+            // populate the in-memory map so eden saves get human names.
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let needs_download = !title_db_path.exists();
+                if needs_download {
+                    let state = app_handle.state::<AppState>();
+                    {
+                        let mut s = state.lock().await;
+                        s.title_db_refreshing = true;
+                    }
+                    let _ = app_handle.emit("title-db-status", "refreshing");
+                    if let Err(e) = titledb::download(&title_db_path).await {
+                        let _ = app_handle.emit(
+                            "title-db-status",
+                            format!("error: {}", e),
+                        );
+                        let mut s = state.lock().await;
+                        s.title_db_refreshing = false;
+                        return;
+                    }
+                }
+                match titledb::parse(&title_db_path) {
+                    Ok(map) => {
+                        let state = app_handle.state::<AppState>();
+                        let mut s = state.lock().await;
+                        s.titles.map = std::sync::Arc::new(map);
+                        s.titles.last_update = titledb::cache_mtime(&title_db_path);
+                        s.title_db_refreshing = false;
+                        let _ = app_handle.emit("title-db-status", "ready");
+                    }
+                    Err(e) => {
+                        let _ = app_handle.emit(
+                            "title-db-status",
+                            format!("error: {}", e),
+                        );
+                        let state = app_handle.state::<AppState>();
+                        let mut s = state.lock().await;
+                        s.title_db_refreshing = false;
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -509,6 +645,8 @@ pub fn run() {
             open_save_folder,
             get_setting,
             set_setting,
+            title_db_status,
+            refresh_title_db,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

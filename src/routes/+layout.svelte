@@ -31,28 +31,28 @@
   <div class="scanlines"></div>
   <div class="grain"></div>
 
-  <main>
-    <header class="bar" data-tauri-drag-region>
-      <div class="bar-left" data-tauri-drag-region>
-        <span class="led led-green"></span>
-        <span class="bar-label" data-tauri-drag-region>SAVE-SYNC.SYS</span>
-        <span class="bar-meta" data-tauri-drag-region>v0.1.0 / nt-x64</span>
+  <header class="bar" data-tauri-drag-region>
+    <div class="bar-left" data-tauri-drag-region>
+      <span class="led led-green"></span>
+      <span class="bar-label" data-tauri-drag-region>SAVE-SYNC.SYS</span>
+      <span class="bar-meta" data-tauri-drag-region>v0.1.0 / nt-x64</span>
+    </div>
+    <div class="bar-right">
+      <span class="bar-meta" data-tauri-drag-region>{$emulators.length} units</span>
+      <span class="divider" data-tauri-drag-region>·</span>
+      <span class="bar-meta clock" data-tauri-drag-region>{fmtClock(now)}</span>
+      <button class="theme-toggle" onclick={toggleTheme} aria-label="toggle theme">
+        {$theme === "dark" ? "[ ☼ ]" : "[ ☾ ]"}
+      </button>
+      <div class="wm-btns">
+        <button class="wm-btn" onclick={() => win.minimize()} aria-label="minimizar">─</button>
+        <button class="wm-btn" onclick={() => win.toggleMaximize()} aria-label="maximizar">□</button>
+        <button class="wm-btn wm-close" onclick={() => win.close()} aria-label="fechar">×</button>
       </div>
-      <div class="bar-right">
-        <span class="bar-meta" data-tauri-drag-region>{$emulators.length} units</span>
-        <span class="divider" data-tauri-drag-region>·</span>
-        <span class="bar-meta clock" data-tauri-drag-region>{fmtClock(now)}</span>
-        <button class="theme-toggle" onclick={toggleTheme} aria-label="toggle theme">
-          {$theme === "dark" ? "[ ☼ ]" : "[ ☾ ]"}
-        </button>
-        <div class="wm-btns">
-          <button class="wm-btn" onclick={() => win.minimize()} aria-label="minimizar">─</button>
-          <button class="wm-btn" onclick={() => win.toggleMaximize()} aria-label="maximizar">□</button>
-          <button class="wm-btn wm-close" onclick={() => win.close()} aria-label="fechar">×</button>
-        </div>
-      </div>
-    </header>
+    </div>
+  </header>
 
+  <main>
     {@render children()}
 
     <footer class="foot">
