@@ -167,7 +167,7 @@ main {
   position: relative;
   max-width: 760px;
   margin: 0 auto;
-  padding: 1.4rem 1.6rem 3rem;
+  padding: 0 1.6rem 3rem;
   z-index: 1;
 }
 
@@ -307,4 +307,41 @@ main {
   font-weight: 700;
   letter-spacing: 0.1em;
   flex-shrink: 0;
+}
+
+/* WINDOW CONTROLS */
+.wm-btns {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  margin-left: 0.4rem;
+}
+
+.wm-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.78rem;
+  line-height: 1;
+  width: 1.9rem;
+  height: 1.6rem;
+  padding: 0;
+  cursor: pointer;
+  transition: all 0.12s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.wm-btn:hover {
+  border-color: var(--border-strong);
+  color: var(--text-bright);
+  background: var(--hover-tint);
+}
+
+.wm-close:hover {
+  color: var(--danger-bright);
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
 }

@@ -8,6 +8,8 @@ export interface EmulatorView {
   dest_path: string;
   enabled: boolean;
   watching: boolean;
+  proc_watching: boolean;
+  process_name: string;
   last_sync: string | null;
   last_error: string | null;
 }

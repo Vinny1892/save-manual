@@ -6,8 +6,16 @@
   import { emulators, type EmulatorView } from "$lib/store";
   import { derived } from "svelte/store";
 
+  interface DetectCandidate { path: string; label: string; }
+
   let debugMsg = $state("");
   let savingPaths = $state(false);
+  let detecting = $state(false);
+  let detectCandidates = $state<DetectCandidate[]>([]);
+  let detectDone = $state(false);
+  let edenUuid = $state<string | null>(null);
+  let procNameDraft = $state("");
+  let savingProcName = $state(false);
 
   const current = derived(
     [emulators, page],
@@ -24,7 +32,14 @@
     if (emu.id !== lastSeenId) {
       sourceDraft = emu.source_path;
       destDraft = emu.dest_path;
+      procNameDraft = emu.process_name;
       lastSeenId = emu.id;
+      detectCandidates = [];
+      detectDone = false;
+      edenUuid = null;
+      if (emu.id === "eden" && emu.source_path) {
+        refreshEdenUuid(emu.source_path);
+      }
     }
   });
 
@@ -50,6 +65,7 @@
         sourcePath: sourceDraft,
         destPath: destDraft,
       });
+      if (emu.id === "eden" && sourceDraft) refreshEdenUuid(sourceDraft);
     } catch (err) {
       debugMsg = "set_emulator_paths: " + String(err);
     } finally {
@@ -79,6 +95,35 @@
     }
   }
 
+  async function toggleProcWatch(emu: EmulatorView) {
+    debugMsg = "";
+    try {
+      if (emu.proc_watching) {
+        await invoke("stop_proc_watch", { id: emu.id });
+      } else {
+        await invoke("start_proc_watch", { id: emu.id });
+      }
+    } catch (err) {
+      debugMsg = "proc_watch: " + String(err);
+    }
+  }
+
+  async function saveProcName(emu: EmulatorView) {
+    debugMsg = "";
+    savingProcName = true;
+    try {
+      await invoke("set_process_name", { id: emu.id, processName: procNameDraft });
+    } catch (err) {
+      debugMsg = "set_process_name: " + String(err);
+    } finally {
+      savingProcName = false;
+    }
+  }
+
+  function procNameDirty(emu: EmulatorView) {
+    return procNameDraft !== emu.process_name;
+  }
+
   async function toggleEnabled(emu: EmulatorView) {
     debugMsg = "";
     try {
@@ -92,8 +137,44 @@
     goto("/");
   }
 
+  function viewSaves(emu: EmulatorView) {
+    goto(`/emulator/${emu.id}/saves`);
+  }
+
   function pathDirty(emu: EmulatorView) {
     return sourceDraft !== emu.source_path || destDraft !== emu.dest_path;
+  }
+
+  async function detectPaths(emu: EmulatorView) {
+    debugMsg = "";
+    detecting = true;
+    detectDone = false;
+    detectCandidates = [];
+    try {
+      detectCandidates = await invoke<DetectCandidate[]>("detect_save_paths", { id: emu.id });
+      detectDone = true;
+    } catch (err) {
+      debugMsg = "detect: " + String(err);
+    } finally {
+      detecting = false;
+    }
+  }
+
+  function useDetected(path: string) {
+    sourceDraft = path;
+    detectCandidates = [];
+    detectDone = false;
+    const emu = $current;
+    if (emu?.id === "eden") refreshEdenUuid(path);
+  }
+
+  async function refreshEdenUuid(nandPath: string) {
+    edenUuid = null;
+    try {
+      edenUuid = await invoke<string | null>("get_eden_uuid", { nandPath });
+    } catch {
+      edenUuid = null;
+    }
   }
 </script>
 
@@ -162,7 +243,32 @@
         <button class="btn btn-thin" onclick={() => pickFolder("source")} disabled={!emu.enabled}>
           [ browse ]
         </button>
+        <button
+          class="btn btn-thin btn-detect"
+          onclick={() => detectPaths(emu)}
+          disabled={!emu.enabled || detecting}
+        >
+          {detecting ? "…" : "[ detect ]"}
+        </button>
       </div>
+
+      {#if detectDone || detecting}
+        <div class="detect-panel">
+          {#if detecting}
+            <span class="detect-status">// scanning disks…</span>
+          {:else if detectCandidates.length === 0}
+            <span class="detect-status">// nothing found</span>
+          {:else}
+            <span class="detect-status">// {detectCandidates.length} candidate{detectCandidates.length > 1 ? "s" : ""} — click to apply:</span>
+            {#each detectCandidates as c (c.path)}
+              <button class="detect-item" onclick={() => useDetected(c.path)}>
+                <span class="detect-label">{c.label}</span>
+                <span class="detect-path">{c.path}</span>
+              </button>
+            {/each}
+          {/if}
+        </div>
+      {/if}
     </div>
 
     <div class="field">
@@ -199,6 +305,15 @@
       <span class="card-meta">last operation</span>
     </header>
 
+    {#if emu.id === "eden"}
+      <div class="meta-row">
+        <span class="meta-key">profile uuid</span>
+        <span class="meta-val uuid-val" class:dim={!edenUuid}>
+          {edenUuid ?? (emu.source_path ? "// not detected" : "// no source path")}
+        </span>
+      </div>
+    {/if}
+
     <div class="meta-row">
       <span class="meta-key">last_sync</span>
       <span class="meta-val" class:dim={!emu.last_sync}>
@@ -212,6 +327,48 @@
         <span class="meta-val err">{emu.last_error}</span>
       </div>
     {/if}
+  </section>
+
+  <section class="card">
+    <header class="card-head">
+      <span class="card-tag">[ proc-watch ]</span>
+      <span class="card-meta">sync on emulator close</span>
+    </header>
+
+    <div class="field">
+      <label class="field-label" for="proc-name">process name</label>
+      <div class="field-row">
+        <input
+          id="proc-name"
+          type="text"
+          class="field-input"
+          bind:value={procNameDraft}
+          placeholder="ex: pcsx2-qt  /  eden.exe  /  org.eden.android"
+          disabled={!emu.enabled}
+        />
+        <button
+          class="btn btn-thin"
+          onclick={() => saveProcName(emu)}
+          disabled={!emu.enabled || savingProcName || !procNameDirty(emu)}
+        >
+          {savingProcName ? "saving..." : procNameDirty(emu) ? "[ commit ]" : "[ saved ]"}
+        </button>
+      </div>
+    </div>
+
+    <div class="proc-watch-row">
+      <button
+        class="btn btn-watch"
+        class:active={emu.proc_watching}
+        onclick={() => toggleProcWatch(emu)}
+        disabled={!emu.enabled}
+      >
+        {emu.proc_watching ? "[ halt proc-watch ]" : "[ engage proc-watch ]"}
+      </button>
+      <span class="proc-status" class:active={emu.proc_watching}>
+        {emu.proc_watching ? "// monitoring — syncs when process exits" : "// idle"}
+      </span>
+    </div>
   </section>
 
   <section class="card ops">
@@ -229,12 +386,16 @@
         {emu.enabled ? "[ disable unit ]" : "[ enable unit ]"}
       </button>
 
+      <button class="btn" onclick={() => viewSaves(emu)}>
+        ▤ view saves
+      </button>
+
       <button
         class="btn"
         onclick={() => syncNow(emu)}
         disabled={!emu.enabled}
       >
-        &#9654; sync now
+        [ sync now ]
       </button>
 
       <button
@@ -243,7 +404,7 @@
         onclick={() => toggleWatch(emu)}
         disabled={!emu.enabled}
       >
-        {emu.watching ? "&#9632; halt watcher" : "&#9678; engage watcher"}
+        {emu.watching ? "[ halt watcher ]" : "[ engage watcher ]"}
       </button>
     </div>
   </section>
@@ -454,6 +615,80 @@
     font-size: 0.72rem;
   }
 
+  .btn-detect {
+    color: var(--accent);
+    border-color: var(--accent);
+    opacity: 0.75;
+  }
+
+  .btn-detect:hover:not(:disabled) {
+    opacity: 1;
+    background: var(--hover-tint);
+  }
+
+  .detect-panel {
+    margin-top: 0.4rem;
+    border: 1px dashed var(--border);
+    background: var(--bg-hint);
+    padding: 0.5rem 0.7rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .detect-status {
+    font-size: 0.69rem;
+    color: var(--text-muted);
+    font-style: italic;
+    letter-spacing: 0.06em;
+    padding-bottom: 0.15rem;
+  }
+
+  .detect-item {
+    background: transparent;
+    border: none;
+    border-bottom: 1px dashed var(--border);
+    color: var(--text-soft);
+    font-family: inherit;
+    font-size: 0.74rem;
+    padding: 0.3rem 0.2rem;
+    cursor: pointer;
+    text-align: left;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.8rem;
+    transition: all 0.12s;
+    min-width: 0;
+  }
+
+  .detect-item:last-child {
+    border-bottom: none;
+  }
+
+  .detect-item:hover {
+    color: var(--text-bright);
+    background: var(--hover-tint);
+    padding-left: 0.5rem;
+  }
+
+  .detect-label {
+    color: var(--text-faint);
+    font-size: 0.67rem;
+    flex-shrink: 0;
+    letter-spacing: 0.04em;
+  }
+
+  .detect-path {
+    color: var(--accent);
+    font-size: 0.73rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    text-align: right;
+  }
+
   .btn-power.on {
     color: var(--success);
     border-color: var(--success-border);
@@ -472,6 +707,25 @@
   .btn-watch.active:hover {
     color: var(--success-bright);
     background: var(--success-glow-bg);
+  }
+
+  .proc-watch-row {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    margin-top: 0.7rem;
+    flex-wrap: wrap;
+  }
+
+  .proc-status {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    font-style: italic;
+    letter-spacing: 0.05em;
+  }
+
+  .proc-status.active {
+    color: var(--success);
   }
 
   .ops .ops-row {
@@ -513,6 +767,12 @@
   .meta-val.dim {
     color: var(--text-faint);
     font-style: italic;
+  }
+
+  .uuid-val {
+    font-size: 0.68rem;
+    letter-spacing: 0.04em;
+    color: var(--accent);
   }
 
   .meta-row.error {
