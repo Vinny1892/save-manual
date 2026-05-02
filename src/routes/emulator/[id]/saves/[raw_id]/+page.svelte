@@ -12,6 +12,15 @@
     size_bytes: number;
   }
 
+  const MOCK_ENTRIES: SaveEntry[] = [
+    { raw_id: "0100152000022000", title: "Mario Kart 8 Deluxe",                    modified: "01/05/2026 22:14", size_bytes: 31_457_280 },
+    { raw_id: "01007EF00011E000", title: "The Legend of Zelda Breath of the Wild", modified: "28/04/2026 18:03", size_bytes: 57_671_680 },
+    { raw_id: "0100000000010000", title: "Super Mario Odyssey",                    modified: "20/04/2026 11:45", size_bytes: 12_582_912 },
+    { raw_id: "01004D300C5AE000", title: "Metroid Dread",                          modified: "10/04/2026 09:30", size_bytes: 8_388_608  },
+    { raw_id: "0100F2C0115B6000", title: "Kirby and the Forgotten Land",           modified: "01/04/2026 14:20", size_bytes: 5_242_880  },
+    { raw_id: "0100ABF008968000", title: "Pokemon Scarlet",                        modified: "22/03/2026 20:55", size_bytes: 20_971_520 },
+  ];
+
   const emuId  = $derived($page.params.id);
   const rawId  = $derived($page.params.raw_id);
   const current = derived(
@@ -41,6 +50,12 @@
     entry = null;
     coverUrl = null;
     imgOk = false;
+    const mock = MOCK_ENTRIES.find((e) => e.raw_id === rawId);
+    if (mock) {
+      entry = mock;
+      fetchCover(mock.title);
+      return;
+    }
     try {
       entry = await invoke<SaveEntry | null>("get_save_entry", { id: emuId, rawId });
       if (entry) fetchCover(entry.title);
@@ -123,8 +138,8 @@
   <p class="status-line">// loading…</p>
 {:else}
   <div class="detail">
-    <div class="cover-col">
-      <div class="cover" class:has-img={imgOk}>
+    <div class="cover-panel">
+      <div class="cover">
         {#if coverUrl}
           <img
             src={coverUrl}
@@ -138,15 +153,16 @@
         {#if !imgOk}
           <div class="cover-fallback">
             <span class="cover-initials">{initials(entry.title)}</span>
-            <span class="cover-short">{entry.title}</span>
           </div>
         {/if}
       </div>
     </div>
 
-    <div class="info-col">
-      <h1 class="game-title">{entry.title}</h1>
-      <span class="game-id">{entry.raw_id}</span>
+    <div class="info-panel">
+      <div class="info-top">
+        <h1 class="game-title">{entry.title}</h1>
+        <span class="game-id">{entry.raw_id}</span>
+      </div>
 
       <div class="stats">
         <div class="stat">
@@ -169,18 +185,9 @@
 
       <div class="actions">
         <button class="action-btn" onclick={syncSave} disabled={syncing}>
-          {#if syncing}
-            // syncing…
-          {:else if syncOk}
-            // sync done ✓
-          {:else}
-            [ sync this save ]
-          {/if}
+          {#if syncing}// syncing…{:else if syncOk}// sync done ✓{:else}[ sync this save ]{/if}
         </button>
-
-        <button class="action-btn" onclick={openFolder}>
-          [ open folder ]
-        </button>
+        <button class="action-btn" onclick={openFolder}>[ open folder ]</button>
 
         {#if !confirmDelete}
           <button class="action-btn danger" onclick={() => (confirmDelete = true)}>
@@ -192,23 +199,21 @@
             <button class="action-btn danger" onclick={deleteSave} disabled={deleting}>
               {deleting ? "deleting…" : "[ yes, delete ]"}
             </button>
-            <button class="action-btn" onclick={() => (confirmDelete = false)}>
-              [ cancel ]
-            </button>
+            <button class="action-btn" onclick={() => (confirmDelete = false)}>[ cancel ]</button>
           </div>
         {/if}
-      </div>
 
-      {#if actionErr}
-        <p class="action-err">! {actionErr}</p>
-      {/if}
+        {#if actionErr}
+          <p class="action-err">! {actionErr}</p>
+        {/if}
+      </div>
     </div>
   </div>
 {/if}
 
 <style>
   .topnav {
-    margin: 1rem 0 1.5rem;
+    margin: 1rem 0 0;
     display: flex;
     align-items: center;
     gap: 0.8rem;
@@ -257,23 +262,25 @@
 
   /* ── layout ── */
   .detail {
-    display: flex;
-    gap: 2rem;
-    align-items: flex-start;
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    border: 1px solid var(--border);
+    background: var(--bg-unit-1);
+    overflow: hidden;
+    margin-top: 6rem;
   }
 
-  /* ── cover ── */
-  .cover-col {
-    flex-shrink: 0;
+  /* ── cover panel ── */
+  .cover-panel {
+    border-right: 1px solid var(--border);
   }
 
   .cover {
     position: relative;
-    width: 160px;
+    width: 100%;
     aspect-ratio: 2 / 3;
     overflow: hidden;
     background: var(--bg-hint);
-    border: 1px solid var(--border);
   }
 
   .cover-img {
@@ -295,50 +302,46 @@
     position: absolute;
     inset: 0;
     display: flex;
-    flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
-    padding: 0.8rem;
-    text-align: center;
   }
 
   .cover-initials {
     font-family: "Major Mono Display", monospace;
-    font-size: 2.2rem;
+    font-size: 2.4rem;
     color: var(--text-muted);
     line-height: 1;
     letter-spacing: 0.05em;
   }
 
-  .cover-short {
-    font-size: 0.62rem;
-    color: var(--text-faint);
-    letter-spacing: 0.04em;
-    line-height: 1.3;
-    word-break: break-word;
-  }
-
-  /* ── info ── */
-  .info-col {
-    flex: 1;
-    min-width: 0;
+  /* ── info panel ── */
+  .info-panel {
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
+    padding: 1.4rem 1.6rem;
+    gap: 0;
+    justify-content: space-between;
+  }
+
+  .info-top {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
   }
 
   .game-title {
-    font-size: 1.1rem;
+    font-size: 1rem;
     color: var(--text-bright);
     letter-spacing: 0.03em;
     font-weight: 400;
     margin: 0;
-    line-height: 1.3;
+    line-height: 1.4;
   }
 
   .game-id {
-    font-size: 0.65rem;
+    font-size: 0.62rem;
     color: var(--text-faint);
     letter-spacing: 0.06em;
     font-variant-numeric: tabular-nums;
@@ -347,10 +350,9 @@
   .stats {
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
-    margin-top: 0.4rem;
-    padding-top: 0.6rem;
-    border-top: 1px solid var(--border);
+    gap: 0.35rem;
+    padding: 0.9rem 0;
+    border-bottom: 1px solid var(--border);
   }
 
   .stat {
@@ -360,16 +362,16 @@
   }
 
   .stat-label {
-    font-size: 0.65rem;
+    font-size: 0.63rem;
     color: var(--text-muted);
     font-style: italic;
     letter-spacing: 0.06em;
-    width: 7rem;
+    width: 6rem;
     flex-shrink: 0;
   }
 
   .stat-value {
-    font-size: 0.75rem;
+    font-size: 0.73rem;
     color: var(--text-soft);
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.04em;
@@ -379,10 +381,9 @@
   .actions {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
-    margin-top: 0.8rem;
-    padding-top: 0.7rem;
-    border-top: 1px solid var(--border);
+    gap: 0.45rem;
+    padding-top: 0.9rem;
+    flex: 1;
   }
 
   .action-btn {

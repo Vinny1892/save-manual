@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import { invoke } from "@tauri-apps/api/core";
   import { emulators } from "$lib/store";
@@ -147,10 +146,7 @@
       {#each entries as entry, i (entry.raw_id)}
         {@const coverUrl = coverUrls.get(entry.raw_id)}
         {@const status = artStatus.get(entry.raw_id)}
-        <div class="card" style="--i: {i}" role="button" tabindex="0"
-          onclick={() => goto(`/emulator/${emuId}/saves/${entry.raw_id}`)}
-          onkeydown={(e) => e.key === "Enter" && goto(`/emulator/${emuId}/saves/${entry.raw_id}`)}
-        >
+        <a class="card" style="--i: {i}" href="/emulator/{emuId}/saves/{entry.raw_id}">
           <div class="cover">
             {#if coverUrl}
               <img
@@ -182,7 +178,7 @@
               {/if}
             </div>
           </div>
-        </div>
+        </a>
       {/each}
     </div>
   {:else}
@@ -190,10 +186,7 @@
       {#each entries as entry, i (entry.raw_id)}
         {@const coverUrl = coverUrls.get(entry.raw_id)}
         {@const status = artStatus.get(entry.raw_id)}
-        <div class="row" style="--i: {i}" role="button" tabindex="0"
-          onclick={() => goto(`/emulator/${emuId}/saves/${entry.raw_id}`)}
-          onkeydown={(e) => e.key === "Enter" && goto(`/emulator/${emuId}/saves/${entry.raw_id}`)}
-        >
+        <a class="row" style="--i: {i}" href="/emulator/{emuId}/saves/{entry.raw_id}">
           <div class="row-thumb">
             {#if coverUrl}
               <img
@@ -222,7 +215,7 @@
               <span class="meta-item">{entry.modified}</span>
             {/if}
           </div>
-        </div>
+        </a>
       {/each}
     </div>
   {/if}
@@ -345,6 +338,8 @@
     animation-delay: calc(var(--i) * 45ms);
     transition: border-color 0.14s, background 0.14s;
     cursor: pointer;
+    text-decoration: none;
+    color: inherit;
   }
 
   .card:hover {
@@ -482,6 +477,8 @@
     animation-delay: calc(var(--i) * 30ms);
     transition: border-color 0.12s, background 0.12s;
     cursor: pointer;
+    text-decoration: none;
+    color: inherit;
   }
 
   .row:hover {
