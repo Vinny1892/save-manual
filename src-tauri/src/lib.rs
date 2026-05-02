@@ -312,6 +312,75 @@ async fn set_setting(key: String, value: String, state: State<'_, AppState>) -> 
     db::set_setting(&s.conn, &key, &value)
 }
 
+#[tauri::command]
+async fn get_save_entry(
+    id: String,
+    raw_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<saves::SaveEntry>, String> {
+    let source = {
+        let s = state.lock().await;
+        db::get(&s.conn, &id)?.source_path
+    };
+    if source.is_empty() {
+        return Err("Configuração incompleta".into());
+    }
+    Ok(saves::get_save(&id, &source, &raw_id))
+}
+
+#[tauri::command]
+async fn delete_save_entry(
+    id: String,
+    raw_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let source = {
+        let s = state.lock().await;
+        db::get(&s.conn, &id)?.source_path
+    };
+    saves::delete_save(&id, &source, &raw_id)
+}
+
+#[tauri::command]
+async fn sync_one_save(
+    id: String,
+    raw_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let (source, dest) = {
+        let s = state.lock().await;
+        let emu = db::get(&s.conn, &id)?;
+        if emu.source_path.is_empty() || emu.dest_path.is_empty() {
+            return Err("Configuração incompleta".into());
+        }
+        (emu.source_path, emu.dest_path)
+    };
+    let result = saves::sync_one(&id, &source, &dest, &raw_id);
+    record_result(&id, &result, &state).await;
+    emit_changed(&app, &state, &id).await;
+    result
+}
+
+#[tauri::command]
+async fn open_save_folder(
+    id: String,
+    raw_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let source = {
+        let s = state.lock().await;
+        db::get(&s.conn, &id)?.source_path
+    };
+    let path = saves::save_fs_path(&id, &source, &raw_id)
+        .ok_or_else(|| format!("save not found: {raw_id}"))?;
+    app.opener()
+        .open_path(path.to_string_lossy().as_ref(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 const SGDB_KEY: &str = "f80f92019254471cca9d62ff91c21eee";
 
 #[tauri::command]
@@ -434,6 +503,10 @@ pub fn run() {
             get_eden_uuid,
             list_saves,
             fetch_cover_url,
+            get_save_entry,
+            delete_save_entry,
+            sync_one_save,
+            open_save_folder,
             get_setting,
             set_setting,
         ])

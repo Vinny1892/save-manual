@@ -147,7 +147,10 @@
       {#each entries as entry, i (entry.raw_id)}
         {@const coverUrl = coverUrls.get(entry.raw_id)}
         {@const status = artStatus.get(entry.raw_id)}
-        <div class="card" style="--i: {i}">
+        <div class="card" style="--i: {i}" role="button" tabindex="0"
+          onclick={() => goto(`/emulator/${emuId}/saves/${entry.raw_id}`)}
+          onkeydown={(e) => e.key === "Enter" && goto(`/emulator/${emuId}/saves/${entry.raw_id}`)}
+        >
           <div class="cover">
             {#if coverUrl}
               <img
@@ -187,7 +190,10 @@
       {#each entries as entry, i (entry.raw_id)}
         {@const coverUrl = coverUrls.get(entry.raw_id)}
         {@const status = artStatus.get(entry.raw_id)}
-        <div class="row" style="--i: {i}">
+        <div class="row" style="--i: {i}" role="button" tabindex="0"
+          onclick={() => goto(`/emulator/${emuId}/saves/${entry.raw_id}`)}
+          onkeydown={(e) => e.key === "Enter" && goto(`/emulator/${emuId}/saves/${entry.raw_id}`)}
+        >
           <div class="row-thumb">
             {#if coverUrl}
               <img
@@ -338,12 +344,17 @@
     animation: reveal 0.28s ease-out forwards;
     animation-delay: calc(var(--i) * 45ms);
     transition: border-color 0.14s, background 0.14s;
-    cursor: default;
+    cursor: pointer;
   }
 
   .card:hover {
     border-color: var(--border-strong);
     background: var(--bg-unit-2);
+  }
+
+  .card:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
   }
 
   @keyframes reveal {
@@ -470,11 +481,17 @@
     animation: reveal 0.22s ease-out forwards;
     animation-delay: calc(var(--i) * 30ms);
     transition: border-color 0.12s, background 0.12s;
+    cursor: pointer;
   }
 
   .row:hover {
     border-color: var(--border-strong);
     background: var(--bg-unit-2);
+  }
+
+  .row:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
   }
 
   .row-thumb {

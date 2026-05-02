@@ -153,6 +153,70 @@ fn list_pcsx2(memcards_dir: &Path) -> Vec<SaveEntry> {
     entries
 }
 
+// ─── single-save operations ─────────────────────────────────────────────────
+
+pub fn get_save(emulator_id: &str, source_path: &str, raw_id: &str) -> Option<SaveEntry> {
+    list_saves(emulator_id, source_path).into_iter().find(|e| e.raw_id == raw_id)
+}
+
+pub fn save_fs_path(emulator_id: &str, source_path: &str, raw_id: &str) -> Option<std::path::PathBuf> {
+    let root = Path::new(source_path);
+    let p = match emulator_id {
+        "eden" => root.join("user/save").join(raw_id),
+        "rpcs3" => {
+            let home = root.join("home");
+            std::fs::read_dir(&home).ok()?.flatten()
+                .map(|u| u.path().join("savedata").join(raw_id))
+                .find(|p| p.exists())?
+        }
+        "pcsx2" => root.join(raw_id),
+        _ => return None,
+    };
+    if p.exists() { Some(p) } else { None }
+}
+
+pub fn delete_save(emulator_id: &str, source_path: &str, raw_id: &str) -> Result<(), String> {
+    let p = save_fs_path(emulator_id, source_path, raw_id)
+        .ok_or_else(|| format!("save not found: {raw_id}"))?;
+    if p.is_dir() {
+        std::fs::remove_dir_all(&p).map_err(|e| e.to_string())
+    } else {
+        std::fs::remove_file(&p).map_err(|e| e.to_string())
+    }
+}
+
+pub fn sync_one(emulator_id: &str, source: &str, dest: &str, raw_id: &str) -> Result<(), String> {
+    let opts = fs_extra::dir::CopyOptions { overwrite: true, copy_inside: false, ..Default::default() };
+    match emulator_id {
+        "eden" => {
+            let from = Path::new(source).join("user/save").join(raw_id);
+            let to   = Path::new(dest).join("user/save");
+            std::fs::create_dir_all(&to).map_err(|e| e.to_string())?;
+            fs_extra::dir::copy(&from, &to, &opts).map(|_| ()).map_err(|e| e.to_string())
+        }
+        "rpcs3" => {
+            let home_src = Path::new(source).join("home");
+            let home_dst = Path::new(dest).join("home");
+            for user in std::fs::read_dir(&home_src).map_err(|e| e.to_string())?.flatten() {
+                let from = user.path().join("savedata").join(raw_id);
+                if from.exists() {
+                    let to = home_dst.join(user.file_name()).join("savedata");
+                    std::fs::create_dir_all(&to).map_err(|e| e.to_string())?;
+                    return fs_extra::dir::copy(&from, &to, &opts)
+                        .map(|_| ()).map_err(|e| e.to_string());
+                }
+            }
+            Err(format!("save not found: {raw_id}"))
+        }
+        "pcsx2" => {
+            let from = Path::new(source).join(raw_id);
+            let to   = Path::new(dest).join(raw_id);
+            std::fs::copy(&from, &to).map(|_| ()).map_err(|e| e.to_string())
+        }
+        _ => Err("emulator not supported".into()),
+    }
+}
+
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 fn dir_size(path: &Path) -> u64 {
