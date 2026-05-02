@@ -27,6 +27,8 @@
   let savingProcName = $state(false);
   let titleDb = $state<TitleDbStatus | null>(null);
   let titleDbErr = $state("");
+  let ps2Db = $state<TitleDbStatus | null>(null);
+  let ps2DbErr = $state("");
 
   const current = derived(
     [emulators, page],
@@ -207,11 +209,33 @@
     }
   }
 
+  async function loadPs2DbStatus() {
+    try {
+      ps2Db = await invoke<TitleDbStatus>("ps2_db_status");
+    } catch (e) {
+      ps2DbErr = String(e);
+    }
+  }
+
+  async function refreshPs2Db() {
+    ps2DbErr = "";
+    try {
+      await invoke("refresh_ps2_db");
+      await loadPs2DbStatus();
+    } catch (e) {
+      ps2DbErr = String(e);
+      await loadPs2DbStatus();
+    }
+  }
+
   onMount(() => {
     loadTitleDbStatus();
-    const unlisten = listen("title-db-status", () => loadTitleDbStatus());
+    loadPs2DbStatus();
+    const u1 = listen("title-db-status", () => loadTitleDbStatus());
+    const u2 = listen("ps2-db-status", () => loadPs2DbStatus());
     return () => {
-      unlisten.then((fn) => fn());
+      u1.then((fn) => fn());
+      u2.then((fn) => fn());
     };
   });
 </script>
@@ -442,6 +466,44 @@
           disabled={titleDb?.refreshing}
         >
           {titleDb?.refreshing ? "// downloading…" : "[ atualizar via blawar ]"}
+        </button>
+      </div>
+    </section>
+  {/if}
+
+  {#if emu.id === "pcsx2"}
+    <section class="card">
+      <header class="card-head">
+        <span class="card-tag">[ ps2db ]</span>
+        <span class="card-meta">ps2 serial ↔ name</span>
+      </header>
+
+      <div class="meta-row">
+        <span class="meta-key">entries</span>
+        <span class="meta-val" class:dim={!ps2Db || ps2Db.count === 0}>
+          {ps2Db ? ps2Db.count.toLocaleString("pt-BR") : "…"}
+        </span>
+      </div>
+      <div class="meta-row">
+        <span class="meta-key">last update</span>
+        <span class="meta-val" class:dim={!ps2Db?.last_update}>
+          {ps2Db?.last_update ?? "never"}
+        </span>
+      </div>
+      {#if ps2DbErr}
+        <div class="meta-row error">
+          <span class="meta-key">last_error</span>
+          <span class="meta-val err">{ps2DbErr}</span>
+        </div>
+      {/if}
+
+      <div class="field-actions">
+        <button
+          class="btn"
+          onclick={refreshPs2Db}
+          disabled={ps2Db?.refreshing}
+        >
+          {ps2Db?.refreshing ? "// downloading…" : "[ atualizar via pcsx2 gameindex ]"}
         </button>
       </div>
     </section>

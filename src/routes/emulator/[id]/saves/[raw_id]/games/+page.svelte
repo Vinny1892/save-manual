@@ -4,28 +4,22 @@
   import { emulators } from "$lib/store";
   import { derived } from "svelte/store";
 
-  interface SaveEntry {
-    raw_id: string;
-    title: string;
+  interface McSave {
+    name: string;
+    serial: string | null;
+    title: string | null;
     modified: string | null;
     size_bytes: number;
   }
 
-  const NESTED_EMUS = new Set(["pcsx2"]);
-
   const emuId = $derived($page.params.id);
+  const rawId = $derived($page.params.raw_id);
   const current = derived(
     [emulators, page],
     ([$emulators, $page]) => $emulators.find((e) => e.id === $page.params.id),
   );
 
-  function entryHref(rawId: string) {
-    return NESTED_EMUS.has(emuId)
-      ? `/emulator/${emuId}/saves/${rawId}/games`
-      : `/emulator/${emuId}/saves/${rawId}`;
-  }
-
-  let entries = $state<SaveEntry[]>([]);
+  let saves = $state<McSave[]>([]);
   let loading = $state(false);
   let loadErr = $state("");
   let viewMode = $state<"grid" | "list">("grid");
@@ -34,56 +28,60 @@
   let artStatus = $state<Map<string, "loading" | "ok" | "err">>(new Map());
 
   $effect(() => {
+    void rawId;
     void emuId;
-    loadSaves();
+    load();
   });
 
   $effect(() => {
-    const pending = entries.filter(
-      (e) => !coverUrls.has(e.raw_id) && !artStatus.has(e.raw_id),
+    const pending = saves.filter(
+      (s) => s.title && !coverUrls.has(s.name) && !artStatus.has(s.name),
     );
     if (pending.length === 0) return;
-    artStatus = new Map([...artStatus, ...pending.map((e) => [e.raw_id, "loading" as const])]);
-    for (const entry of pending) {
-      fetchCover(entry.raw_id, entry.title);
+    artStatus = new Map([
+      ...artStatus,
+      ...pending.map((s) => [s.name, "loading" as const]),
+    ]);
+    for (const save of pending) {
+      fetchCover(save.name, save.title!);
     }
   });
 
-  async function fetchCover(rawId: string, title: string) {
+  async function fetchCover(key: string, title: string) {
     try {
       const url = await invoke<string | null>("fetch_cover_url", { title });
       if (url) {
-        coverUrls = new Map(coverUrls).set(rawId, url);
+        coverUrls = new Map(coverUrls).set(key, url);
       } else {
-        artStatus = new Map(artStatus).set(rawId, "err");
+        artStatus = new Map(artStatus).set(key, "err");
       }
     } catch {
-      artStatus = new Map(artStatus).set(rawId, "err");
+      artStatus = new Map(artStatus).set(key, "err");
     }
   }
 
-  async function loadSaves() {
+  function onImgLoad(key: string) {
+    artStatus = new Map(artStatus).set(key, "ok");
+  }
+
+  function onImgErr(key: string) {
+    artStatus = new Map(artStatus).set(key, "err");
+    coverUrls = new Map([...coverUrls].filter(([k]) => k !== key));
+  }
+
+  async function load() {
     loading = true;
     loadErr = "";
-    entries = [];
+    saves = [];
     coverUrls = new Map();
     artStatus = new Map();
     try {
-      entries = await invoke<SaveEntry[]>("list_saves", { id: emuId });
-    } catch (err) {
-      loadErr = String(err);
+      saves = await invoke<McSave[]>("list_memcard_saves", { id: emuId, rawId });
+    } catch (e) {
+      loadErr = String(e);
     } finally {
       loading = false;
     }
-  }
-
-  function onImgLoad(id: string) {
-    artStatus = new Map(artStatus).set(id, "ok");
-  }
-
-  function onImgErr(id: string) {
-    artStatus = new Map(artStatus).set(id, "err");
-    coverUrls = new Map([...coverUrls].filter(([k]) => k !== id));
   }
 
   function fmtBytes(b: number): string {
@@ -91,14 +89,22 @@
     if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
     return `${(b / 1024 / 1024).toFixed(1)} MB`;
   }
+
+  function initials(s: string): string {
+    return s.split(/\s+/).slice(0, 2).map((w) => w[0] ?? "").join("").toUpperCase();
+  }
+
+  function saveHref(save: McSave): string {
+    return `/emulator/${emuId}/saves/${rawId}/games/${encodeURIComponent(save.name)}`;
+  }
 </script>
 
 <section class="topnav">
-  <a class="back" href="/emulator/{emuId}">
+  <a class="back" href="/emulator/{emuId}/saves">
     <span class="back-arrow">◀</span> back
   </a>
   {#if $current}
-    <span class="nav-title">{$current.name} / saves</span>
+    <span class="nav-title">{$current.name} / {rawId}</span>
   {/if}
   <div class="view-toggle">
     <button
@@ -121,49 +127,46 @@
     <span class="alert-tag">! ERROR</span>
     <span>{loadErr}</span>
   </section>
-{/if}
-
-{#if loading}
-  <p class="status-line">// scanning saves…</p>
+{:else if loading}
+  <p class="status-line">// reading memcard…</p>
 {:else}
   <p class="status-line">
-    // {entries.length} save{entries.length !== 1 ? "s" : ""} found
+    // {saves.length} game{saves.length !== 1 ? "s" : ""} on this card
   </p>
 
   {#if viewMode === "grid"}
     <div class="grid">
-      {#each entries as entry, i (entry.raw_id)}
-        {@const coverUrl = coverUrls.get(entry.raw_id)}
-        {@const status = artStatus.get(entry.raw_id)}
-        <a class="card" style="--i: {i}" href={entryHref(entry.raw_id)}>
+      {#each saves as save, i (save.name)}
+        {@const coverUrl = coverUrls.get(save.name)}
+        {@const status = artStatus.get(save.name)}
+        {@const display = save.title ?? save.serial ?? save.name}
+        <a class="card" style="--i: {i}" href={saveHref(save)}>
           <div class="cover">
             {#if coverUrl}
               <img
                 src={coverUrl}
-                alt={entry.title}
+                alt={display}
                 class="cover-img"
                 class:hidden={status !== "ok"}
-                onload={() => onImgLoad(entry.raw_id)}
-                onerror={() => onImgErr(entry.raw_id)}
+                onload={() => onImgLoad(save.name)}
+                onerror={() => onImgErr(save.name)}
               />
             {/if}
             {#if status !== "ok"}
               <div class="cover-fallback">
-                <span class="cover-initials">
-                  {entry.title.split(" ").slice(0, 2).map(w => w[0]).join("").toUpperCase()}
-                </span>
-                <span class="cover-short">{entry.title}</span>
+                <span class="cover-initials">{initials(display)}</span>
+                <span class="cover-short">{display}</span>
               </div>
             {/if}
           </div>
           <div class="card-info">
-            <span class="card-title" title={entry.title}>{entry.title}</span>
-            <span class="card-id">{entry.raw_id}</span>
+            <span class="card-title" title={display}>{display}</span>
+            <span class="card-id">{save.serial ?? save.name}</span>
             <div class="card-meta">
-              <span class="meta-item">{fmtBytes(entry.size_bytes)}</span>
-              {#if entry.modified}
+              <span class="meta-item">{fmtBytes(save.size_bytes)}</span>
+              {#if save.modified}
                 <span class="meta-sep">·</span>
-                <span class="meta-item">{entry.modified}</span>
+                <span class="meta-item">{save.modified}</span>
               {/if}
             </div>
           </div>
@@ -172,41 +175,49 @@
     </div>
   {:else}
     <div class="list">
-      {#each entries as entry, i (entry.raw_id)}
-        {@const coverUrl = coverUrls.get(entry.raw_id)}
-        {@const status = artStatus.get(entry.raw_id)}
-        <a class="row" style="--i: {i}" href={entryHref(entry.raw_id)}>
+      {#each saves as save, i (save.name)}
+        {@const coverUrl = coverUrls.get(save.name)}
+        {@const status = artStatus.get(save.name)}
+        {@const display = save.title ?? save.serial ?? save.name}
+        <a class="row" style="--i: {i}" href={saveHref(save)}>
           <div class="row-thumb">
             {#if coverUrl}
               <img
                 src={coverUrl}
-                alt={entry.title}
+                alt={display}
                 class="thumb-img"
                 class:hidden={status !== "ok"}
-                onload={() => onImgLoad(entry.raw_id)}
-                onerror={() => onImgErr(entry.raw_id)}
+                onload={() => onImgLoad(save.name)}
+                onerror={() => onImgErr(save.name)}
               />
             {/if}
             {#if status !== "ok"}
-              <span class="thumb-initials">
-                {entry.title.split(" ").slice(0, 2).map(w => w[0]).join("").toUpperCase()}
-              </span>
+              <span class="thumb-initials">{initials(display)}</span>
             {/if}
           </div>
           <div class="row-info">
-            <span class="row-title">{entry.title}</span>
-            <span class="row-id">{entry.raw_id}</span>
+            <span class="row-title">{display}</span>
+            <span class="row-id">
+              {save.serial ?? save.name}
+              {#if save.serial && save.serial !== save.name}
+                <span class="row-folder">· {save.name}</span>
+              {/if}
+            </span>
           </div>
           <div class="row-meta">
-            <span class="meta-item">{fmtBytes(entry.size_bytes)}</span>
-            {#if entry.modified}
+            <span class="meta-item">{fmtBytes(save.size_bytes)}</span>
+            {#if save.modified}
               <span class="meta-sep">·</span>
-              <span class="meta-item">{entry.modified}</span>
+              <span class="meta-item">{save.modified}</span>
             {/if}
           </div>
         </a>
       {/each}
     </div>
+  {/if}
+
+  {#if saves.length === 0}
+    <p class="empty-note">// nenhum save encontrado neste memcard</p>
   {/if}
 {/if}
 
@@ -292,6 +303,15 @@
     margin: 0 0 1rem;
   }
 
+  .empty-note {
+    margin-top: 1rem;
+    font-size: 0.74rem;
+    color: var(--text-faint);
+    font-style: italic;
+    letter-spacing: 0.05em;
+  }
+
+  /* ── grid ── */
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -324,11 +344,6 @@
     outline-offset: 2px;
   }
 
-  @keyframes reveal {
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-  /* ── cover ── */
   .cover {
     position: relative;
     aspect-ratio: 2 / 3;
@@ -378,11 +393,8 @@
     letter-spacing: 0.05em;
     line-height: 1.3;
     word-break: break-word;
-    text-align: center;
-    padding: 0 0.3rem;
   }
 
-  /* ── card info ── */
   .card-info {
     padding: 0.5rem 0.55rem 0.6rem;
     display: flex;
@@ -418,18 +430,7 @@
     flex-wrap: wrap;
   }
 
-  .meta-item {
-    font-size: 0.62rem;
-    color: var(--text-muted);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .meta-sep {
-    color: var(--text-faint);
-    font-size: 0.62rem;
-  }
-
-  /* ── list view ── */
+  /* ── list ── */
   .list {
     display: flex;
     flex-direction: column;
@@ -440,17 +441,17 @@
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    padding: 0.45rem 0.6rem;
+    padding: 0.5rem 0.7rem;
     border: 1px solid var(--border);
     background: var(--bg-unit-1);
     opacity: 0;
     transform: translateY(4px);
     animation: reveal 0.22s ease-out forwards;
     animation-delay: calc(var(--i) * 30ms);
-    transition: border-color 0.12s, background 0.12s;
-    cursor: pointer;
     text-decoration: none;
     color: inherit;
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
   }
 
   .row:hover {
@@ -511,28 +512,49 @@
   .row-title {
     font-size: 0.78rem;
     color: var(--text-bright);
+    letter-spacing: 0.04em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    letter-spacing: 0.02em;
   }
 
   .row-id {
-    font-size: 0.6rem;
+    font-size: 0.62rem;
     color: var(--text-faint);
     letter-spacing: 0.04em;
     font-variant-numeric: tabular-nums;
+    word-break: break-all;
+  }
+
+  .row-folder {
+    color: var(--text-faint);
+    font-size: 0.58rem;
+    margin-left: 0.2rem;
   }
 
   .row-meta {
     display: flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.3rem;
     flex-shrink: 0;
     white-space: nowrap;
   }
 
-  /* ── misc ── */
+  .meta-item {
+    font-size: 0.66rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .meta-sep {
+    color: var(--text-faint);
+    font-size: 0.66rem;
+  }
+
+  @keyframes reveal {
+    to { opacity: 1; transform: translateY(0); }
+  }
+
   .alert {
     display: flex;
     gap: 0.9rem;

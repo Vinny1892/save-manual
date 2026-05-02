@@ -149,6 +149,22 @@ fn read_sfo_title(path: &Path) -> Option<String> {
 // ─── PCSX2 (PS2) ────────────────────────────────────────────────────────────
 // <memcards-dir>/*.ps2
 
+const PS2MC_MAGIC: &[u8] = b"Sony PS2 Memory Card Format ";
+
+/// PCSX2 creates 8-MB memcard placeholders before any game writes to them.
+/// Those files have the right size and `.ps2` extension but their first
+/// bytes are all zero (no SuperBlock yet). Skip them so they don't show up
+/// as listable entries.
+fn ps2_card_is_formatted(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut buf = [0u8; PS2MC_MAGIC.len()];
+    if f.read_exact(&mut buf).is_err() {
+        return false;
+    }
+    buf == PS2MC_MAGIC
+}
+
 fn list_pcsx2(memcards_dir: &Path) -> Vec<SaveEntry> {
     let Ok(files) = std::fs::read_dir(memcards_dir) else {
         return vec![];
@@ -161,6 +177,7 @@ fn list_pcsx2(memcards_dir: &Path) -> Vec<SaveEntry> {
                     .to_string_lossy()
                     .to_lowercase()
                     .ends_with(".ps2")
+                && ps2_card_is_formatted(&e.path())
         })
         .map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();

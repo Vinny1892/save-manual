@@ -1,52 +1,50 @@
 <script lang="ts">
-  import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import { invoke } from "@tauri-apps/api/core";
   import { emulators } from "$lib/store";
   import { derived } from "svelte/store";
 
-  interface SaveEntry {
-    raw_id: string;
-    title: string;
+  interface McSave {
+    name: string;
+    serial: string | null;
+    title: string | null;
     modified: string | null;
     size_bytes: number;
   }
 
-  const READ_ONLY_EMUS = new Set(["pcsx2"]);
-
-  const emuId  = $derived($page.params.id);
-  const rawId  = $derived($page.params.raw_id);
-  const readOnly = $derived(READ_ONLY_EMUS.has(emuId));
+  const emuId = $derived($page.params.id);
+  const rawId = $derived($page.params.raw_id);
+  const saveName = $derived(decodeURIComponent($page.params.save_name));
   const current = derived(
     [emulators, page],
     ([$emulators, $page]) => $emulators.find((e) => e.id === $page.params.id),
   );
 
-  let entry    = $state<SaveEntry | null>(null);
+  let entry = $state<McSave | null>(null);
   let coverUrl = $state<string | null>(null);
-  let imgOk    = $state(false);
-  let loadErr  = $state("");
-
-  // actions
-  let syncing  = $state(false);
-  let deleting = $state(false);
-  let confirmDelete = $state(false);
-  let actionErr = $state("");
-  let syncOk   = $state(false);
+  let imgOk = $state(false);
+  let loadErr = $state("");
 
   $effect(() => {
+    void saveName;
     void rawId;
-    loadEntry();
+    void emuId;
+    load();
   });
 
-  async function loadEntry() {
+  async function load() {
     loadErr = "";
     entry = null;
     coverUrl = null;
     imgOk = false;
     try {
-      entry = await invoke<SaveEntry | null>("get_save_entry", { id: emuId, rawId });
-      if (entry) fetchCover(entry.title);
+      const all = await invoke<McSave[]>("list_memcard_saves", { id: emuId, rawId });
+      entry = all.find((s) => s.name === saveName) ?? null;
+      if (!entry) {
+        loadErr = `save "${saveName}" não encontrado neste memcard`;
+        return;
+      }
+      if (entry.title) fetchCover(entry.title);
     } catch (e) {
       loadErr = String(e);
     }
@@ -60,60 +58,23 @@
     }
   }
 
-  async function syncSave() {
-    syncing = true;
-    actionErr = "";
-    syncOk = false;
-    try {
-      await invoke("sync_one_save", { id: emuId, rawId });
-      syncOk = true;
-      setTimeout(() => (syncOk = false), 3000);
-    } catch (e) {
-      actionErr = String(e);
-    } finally {
-      syncing = false;
-    }
-  }
-
-  async function openFolder() {
-    actionErr = "";
-    try {
-      await invoke("open_save_folder", { id: emuId, rawId });
-    } catch (e) {
-      actionErr = String(e);
-    }
-  }
-
-  async function deleteSave() {
-    deleting = true;
-    actionErr = "";
-    try {
-      await invoke("delete_save_entry", { id: emuId, rawId });
-      goto(`/emulator/${emuId}/saves`);
-    } catch (e) {
-      actionErr = String(e);
-      deleting = false;
-      confirmDelete = false;
-    }
-  }
-
   function fmtBytes(b: number): string {
     if (b < 1024) return `${b} B`;
     if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
     return `${(b / 1024 / 1024).toFixed(1)} MB`;
   }
 
-  function initials(title: string): string {
-    return title.split(" ").slice(0, 2).map(w => w[0]).join("").toUpperCase();
+  function initials(s: string): string {
+    return s.split(/\s+/).slice(0, 2).map((w) => w[0] ?? "").join("").toUpperCase();
   }
 </script>
 
 <section class="topnav">
-  <button class="back" onclick={() => goto(`/emulator/${emuId}/saves`)}>
+  <a class="back" href="/emulator/{emuId}/saves/{rawId}/games">
     <span class="back-arrow">◀</span> back
-  </button>
+  </a>
   {#if $current && entry}
-    <span class="nav-title">{$current.name} / saves / {entry.title}</span>
+    <span class="nav-title">{$current.name} / {rawId} / {entry.title ?? entry.serial ?? entry.name}</span>
   {/if}
 </section>
 
@@ -125,13 +86,14 @@
 {:else if !entry}
   <p class="status-line">// loading…</p>
 {:else}
+  {@const display = entry.title ?? entry.serial ?? entry.name}
   <div class="detail">
     <div class="cover-panel">
       <div class="cover">
         {#if coverUrl}
           <img
             src={coverUrl}
-            alt={entry.title}
+            alt={display}
             class="cover-img"
             class:hidden={!imgOk}
             onload={() => (imgOk = true)}
@@ -140,7 +102,7 @@
         {/if}
         {#if !imgOk}
           <div class="cover-fallback">
-            <span class="cover-initials">{initials(entry.title)}</span>
+            <span class="cover-initials">{initials(display)}</span>
           </div>
         {/if}
       </div>
@@ -148,11 +110,17 @@
 
     <div class="info-panel">
       <div class="info-top">
-        <h1 class="game-title">{entry.title}</h1>
-        <span class="game-id">{entry.raw_id}</span>
+        <h1 class="game-title">{display}</h1>
+        {#if entry.serial}
+          <span class="game-id">{entry.serial}</span>
+        {/if}
       </div>
 
       <div class="stats">
+        <div class="stat">
+          <span class="stat-label">// folder</span>
+          <span class="stat-value">{entry.name}</span>
+        </div>
         <div class="stat">
           <span class="stat-label">// size</span>
           <span class="stat-value">{fmtBytes(entry.size_bytes)}</span>
@@ -163,44 +131,13 @@
             <span class="stat-value">{entry.modified}</span>
           </div>
         {/if}
-        {#if $current?.last_sync}
-          <div class="stat">
-            <span class="stat-label">// last sync</span>
-            <span class="stat-value">{$current.last_sync}</span>
-          </div>
-        {/if}
+        <div class="stat">
+          <span class="stat-label">// memcard</span>
+          <span class="stat-value">{rawId}</span>
+        </div>
       </div>
 
-      <div class="actions">
-        {#if readOnly}
-          <p class="readonly-note">// list-only mode — backup via [ sync now ] on the unit page</p>
-        {:else}
-          <button class="action-btn" onclick={syncSave} disabled={syncing}>
-            {#if syncing}// syncing…{:else if syncOk}// sync done ✓{:else}[ sync this save ]{/if}
-          </button>
-        {/if}
-        <button class="action-btn" onclick={openFolder}>[ open folder ]</button>
-
-        {#if !readOnly}
-          {#if !confirmDelete}
-            <button class="action-btn danger" onclick={() => (confirmDelete = true)}>
-              [ delete save ]
-            </button>
-          {:else}
-            <div class="confirm-row">
-              <span class="confirm-label">! confirm delete?</span>
-              <button class="action-btn danger" onclick={deleteSave} disabled={deleting}>
-                {deleting ? "deleting…" : "[ yes, delete ]"}
-              </button>
-              <button class="action-btn" onclick={() => (confirmDelete = false)}>[ cancel ]</button>
-            </div>
-          {/if}
-        {/if}
-
-        {#if actionErr}
-          <p class="action-err">! {actionErr}</p>
-        {/if}
-      </div>
+      <p class="readonly-note">// list-only mode — backup via [ sync now ] on the unit page</p>
     </div>
   </div>
 {/if}
@@ -214,6 +151,8 @@
   }
 
   .back {
+    display: inline-flex;
+    align-items: center;
     background: transparent;
     border: 1px dashed var(--border-strong);
     color: var(--text-soft);
@@ -222,6 +161,7 @@
     padding: 0.35rem 0.7rem;
     cursor: pointer;
     letter-spacing: 0.06em;
+    text-decoration: none;
     transition: all 0.14s;
     flex-shrink: 0;
   }
@@ -254,17 +194,15 @@
     letter-spacing: 0.06em;
   }
 
-  /* ── layout ── */
   .detail {
     display: grid;
     grid-template-columns: 260px 1fr;
     border: 1px solid var(--border);
     background: var(--bg-unit-1);
     overflow: hidden;
-    margin-top: 6rem;
+    margin-top: 1.5rem;
   }
 
-  /* ── cover panel ── */
   .cover-panel {
     border-right: 1px solid var(--border);
   }
@@ -308,7 +246,6 @@
     letter-spacing: 0.05em;
   }
 
-  /* ── info panel ── */
   .info-panel {
     display: flex;
     flex-direction: column;
@@ -369,82 +306,17 @@
     color: var(--text-soft);
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.04em;
-  }
-
-  /* ── actions ── */
-  .actions {
-    display: flex;
-    flex-direction: column;
-    gap: 0.45rem;
-    padding-top: 0.9rem;
-    flex: 1;
-  }
-
-  .action-btn {
-    background: transparent;
-    border: 1px solid var(--border-strong);
-    color: var(--text-soft);
-    font-family: inherit;
-    font-size: 0.76rem;
-    padding: 0.45rem 0.8rem;
-    cursor: pointer;
-    letter-spacing: 0.06em;
-    text-align: left;
-    transition: all 0.13s;
-    width: fit-content;
-  }
-
-  .action-btn:hover:not(:disabled) {
-    color: var(--accent);
-    border-color: var(--accent);
-    background: var(--hover-tint);
-  }
-
-  .action-btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-
-  .action-btn.danger {
-    color: var(--error, #e05c5c);
-    border-color: var(--error-border, #5a2b2b);
-  }
-
-  .action-btn.danger:hover:not(:disabled) {
-    background: var(--error-bg, rgba(200, 50, 50, 0.08));
-    border-color: var(--error, #e05c5c);
-    color: var(--error, #e05c5c);
-  }
-
-  .confirm-row {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    flex-wrap: wrap;
-  }
-
-  .confirm-label {
-    font-size: 0.72rem;
-    color: var(--error, #e05c5c);
-    letter-spacing: 0.06em;
-  }
-
-  .action-err {
-    font-size: 0.7rem;
-    color: var(--error, #e05c5c);
-    letter-spacing: 0.04em;
-    margin-top: 0.3rem;
+    word-break: break-all;
   }
 
   .readonly-note {
+    margin: 0.9rem 0 0;
     font-size: 0.7rem;
     color: var(--text-muted);
     font-style: italic;
     letter-spacing: 0.05em;
-    margin: 0 0 0.3rem;
   }
 
-  /* ── misc ── */
   .alert {
     display: flex;
     gap: 0.9rem;

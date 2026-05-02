@@ -1,5 +1,7 @@
 mod db;
 mod detect;
+mod ps2db;
+mod ps2mc;
 mod saves;
 mod sync;
 mod titledb;
@@ -34,6 +36,9 @@ pub struct AppData {
     titles: titledb::TitleDb,
     title_db_path: std::path::PathBuf,
     title_db_refreshing: bool,
+    ps2: ps2db::Ps2Db,
+    ps2_db_path: std::path::PathBuf,
+    ps2_db_refreshing: bool,
 }
 
 type AppState = Mutex<AppData>;
@@ -459,6 +464,37 @@ async fn detect_save_paths(id: String) -> Result<Vec<detect::DetectCandidate>, S
 }
 
 #[tauri::command]
+async fn list_memcard_saves(
+    id: String,
+    raw_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ps2mc::McSave>, String> {
+    if id != "pcsx2" {
+        return Err("memcard parsing só suportado para pcsx2".into());
+    }
+    let (source, ps2_titles) = {
+        let s = state.lock().await;
+        (db::get(&s.conn, &id)?.source_path, s.ps2.map.clone())
+    };
+    if source.is_empty() {
+        return Err("Configuração incompleta".into());
+    }
+    let path = std::path::Path::new(&source).join(&raw_id);
+    if !path.exists() {
+        return Err(format!("memcard não encontrado: {raw_id}"));
+    }
+    let mut saves = ps2mc::list_saves(&path)?;
+    for save in &mut saves {
+        if let Some(serial) = &save.serial {
+            if let Some(name) = ps2_titles.get(&serial.to_uppercase()) {
+                save.title = Some(name.clone());
+            }
+        }
+    }
+    Ok(saves)
+}
+
+#[tauri::command]
 async fn title_db_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let s = state.lock().await;
     let last_update = s
@@ -471,6 +507,59 @@ async fn title_db_status(state: State<'_, AppState>) -> Result<serde_json::Value
         "refreshing": s.title_db_refreshing,
         "cache_path": s.title_db_path.to_string_lossy(),
     }))
+}
+
+#[tauri::command]
+async fn ps2_db_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let s = state.lock().await;
+    let last_update = s
+        .ps2
+        .last_update
+        .map(|t| t.format("%d/%m/%Y %H:%M").to_string());
+    Ok(serde_json::json!({
+        "count": s.ps2.map.len(),
+        "last_update": last_update,
+        "refreshing": s.ps2_db_refreshing,
+        "cache_path": s.ps2_db_path.to_string_lossy(),
+    }))
+}
+
+#[tauri::command]
+async fn refresh_ps2_db(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let target = {
+        let mut s = state.lock().await;
+        if s.ps2_db_refreshing {
+            return Err("já em andamento".into());
+        }
+        s.ps2_db_refreshing = true;
+        s.ps2_db_path.clone()
+    };
+    let _ = app.emit("ps2-db-status", "refreshing");
+
+    let outcome = async {
+        ps2db::download(&target).await?;
+        let map = ps2db::parse(&target)?;
+        Ok::<_, String>(map)
+    }
+    .await;
+
+    let mut s = state.lock().await;
+    s.ps2_db_refreshing = false;
+    match outcome {
+        Ok(map) => {
+            s.ps2.map = std::sync::Arc::new(map);
+            s.ps2.last_update = ps2db::cache_mtime(&s.ps2_db_path);
+            let _ = app.emit("ps2-db-status", "ready");
+            Ok(())
+        }
+        Err(e) => {
+            let _ = app.emit("ps2-db-status", format!("error: {}", e));
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]
@@ -569,6 +658,7 @@ pub fn run() {
             let db_path = app_data_dir.join("save-sync.db");
             let conn = db::open(&db_path).expect("falha ao abrir DB");
             let title_db_path = titledb::cache_path(&app_data_dir);
+            let ps2_db_path = ps2db::cache_path(&app_data_dir);
 
             app.manage(Mutex::new(AppData {
                 conn,
@@ -577,6 +667,9 @@ pub fn run() {
                 titles: titledb::TitleDb::default(),
                 title_db_path: title_db_path.clone(),
                 title_db_refreshing: false,
+                ps2: ps2db::Ps2Db::default(),
+                ps2_db_path: ps2_db_path.clone(),
+                ps2_db_refreshing: false,
             }));
 
             // Background: load existing cache (or download on first run), then
@@ -618,6 +711,45 @@ pub fn run() {
                         let state = app_handle.state::<AppState>();
                         let mut s = state.lock().await;
                         s.title_db_refreshing = false;
+                        let _ = e;
+                    }
+                }
+            });
+
+            // Same lazy-load pattern for the PS2 database.
+            let app_handle_ps2 = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let needs_download = !ps2_db_path.exists();
+                if needs_download {
+                    let state = app_handle_ps2.state::<AppState>();
+                    {
+                        let mut s = state.lock().await;
+                        s.ps2_db_refreshing = true;
+                    }
+                    let _ = app_handle_ps2.emit("ps2-db-status", "refreshing");
+                    if let Err(e) = ps2db::download(&ps2_db_path).await {
+                        let _ = app_handle_ps2
+                            .emit("ps2-db-status", format!("error: {}", e));
+                        let mut s = state.lock().await;
+                        s.ps2_db_refreshing = false;
+                        return;
+                    }
+                }
+                match ps2db::parse(&ps2_db_path) {
+                    Ok(map) => {
+                        let state = app_handle_ps2.state::<AppState>();
+                        let mut s = state.lock().await;
+                        s.ps2.map = std::sync::Arc::new(map);
+                        s.ps2.last_update = ps2db::cache_mtime(&ps2_db_path);
+                        s.ps2_db_refreshing = false;
+                        let _ = app_handle_ps2.emit("ps2-db-status", "ready");
+                    }
+                    Err(e) => {
+                        let _ = app_handle_ps2
+                            .emit("ps2-db-status", format!("error: {}", e));
+                        let state = app_handle_ps2.state::<AppState>();
+                        let mut s = state.lock().await;
+                        s.ps2_db_refreshing = false;
                     }
                 }
             });
@@ -647,6 +779,9 @@ pub fn run() {
             set_setting,
             title_db_status,
             refresh_title_db,
+            list_memcard_saves,
+            ps2_db_status,
+            refresh_ps2_db,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
