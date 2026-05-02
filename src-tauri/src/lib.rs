@@ -421,7 +421,10 @@ async fn open_save_folder(
 const SGDB_KEY: &str = "f80f92019254471cca9d62ff91c21eee";
 
 #[tauri::command]
-async fn fetch_cover_url(title: String) -> Result<Option<String>, String> {
+async fn fetch_cover_url(
+    title: String,
+    kind: Option<String>,
+) -> Result<Option<String>, String> {
     let client = reqwest::Client::new();
 
     let search: serde_json::Value = client
@@ -442,11 +445,21 @@ async fn fetch_cover_url(title: String) -> Result<Option<String>, String> {
         None => return Ok(None),
     };
 
-    let grids: serde_json::Value = client
-        .get(format!(
+    // "icon" → square icon (best for list/thumb views).
+    // anything else (incl. None) → 600x900 portrait grid (default for cards).
+    let endpoint = match kind.as_deref() {
+        Some("icon") => format!(
+            "https://www.steamgriddb.com/api/v2/icons/game/{}?limit=1",
+            game_id
+        ),
+        _ => format!(
             "https://www.steamgriddb.com/api/v2/grids/game/{}?dimensions=600x900&limit=1",
             game_id
-        ))
+        ),
+    };
+
+    let assets: serde_json::Value = client
+        .get(endpoint)
         .header("Authorization", format!("Bearer {}", SGDB_KEY))
         .send()
         .await
@@ -455,7 +468,7 @@ async fn fetch_cover_url(title: String) -> Result<Option<String>, String> {
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(grids["data"][0]["url"].as_str().map(|s| s.to_string()))
+    Ok(assets["data"][0]["url"].as_str().map(|s| s.to_string()))
 }
 
 #[tauri::command]

@@ -24,8 +24,10 @@
   let loadErr = $state("");
   let viewMode = $state<"grid" | "list">("grid");
 
-  let coverUrls = $state<Map<string, string>>(new Map());
-  let artStatus = $state<Map<string, "loading" | "ok" | "err">>(new Map());
+  let gridUrls = $state<Map<string, string>>(new Map());
+  let iconUrls = $state<Map<string, string>>(new Map());
+  let gridStatus = $state<Map<string, "loading" | "ok" | "err">>(new Map());
+  let iconStatus = $state<Map<string, "loading" | "ok" | "err">>(new Map());
 
   $effect(() => {
     void rawId;
@@ -34,47 +36,63 @@
   });
 
   $effect(() => {
+    const isList = viewMode === "list";
+    const urls = isList ? iconUrls : gridUrls;
+    const status = isList ? iconStatus : gridStatus;
     const pending = saves.filter(
-      (s) => s.title && !coverUrls.has(s.name) && !artStatus.has(s.name),
+      (s) => s.title && !urls.has(s.name) && !status.has(s.name),
     );
     if (pending.length === 0) return;
-    artStatus = new Map([
-      ...artStatus,
+    const next = new Map([
+      ...status,
       ...pending.map((s) => [s.name, "loading" as const]),
     ]);
+    if (isList) iconStatus = next;
+    else gridStatus = next;
     for (const save of pending) {
-      fetchCover(save.name, save.title!);
+      fetchAsset(save.name, save.title!, isList ? "icon" : "grid");
     }
   });
 
-  async function fetchCover(key: string, title: string) {
+  async function fetchAsset(key: string, title: string, kind: "grid" | "icon") {
     try {
-      const url = await invoke<string | null>("fetch_cover_url", { title });
-      if (url) {
-        coverUrls = new Map(coverUrls).set(key, url);
+      const url = await invoke<string | null>("fetch_cover_url", { title, kind });
+      if (kind === "icon") {
+        if (url) iconUrls = new Map(iconUrls).set(key, url);
+        else iconStatus = new Map(iconStatus).set(key, "err");
       } else {
-        artStatus = new Map(artStatus).set(key, "err");
+        if (url) gridUrls = new Map(gridUrls).set(key, url);
+        else gridStatus = new Map(gridStatus).set(key, "err");
       }
     } catch {
-      artStatus = new Map(artStatus).set(key, "err");
+      if (kind === "icon") iconStatus = new Map(iconStatus).set(key, "err");
+      else gridStatus = new Map(gridStatus).set(key, "err");
     }
   }
 
-  function onImgLoad(key: string) {
-    artStatus = new Map(artStatus).set(key, "ok");
+  function onImgLoad(key: string, kind: "grid" | "icon") {
+    if (kind === "icon") iconStatus = new Map(iconStatus).set(key, "ok");
+    else gridStatus = new Map(gridStatus).set(key, "ok");
   }
 
-  function onImgErr(key: string) {
-    artStatus = new Map(artStatus).set(key, "err");
-    coverUrls = new Map([...coverUrls].filter(([k]) => k !== key));
+  function onImgErr(key: string, kind: "grid" | "icon") {
+    if (kind === "icon") {
+      iconStatus = new Map(iconStatus).set(key, "err");
+      iconUrls = new Map([...iconUrls].filter(([k]) => k !== key));
+    } else {
+      gridStatus = new Map(gridStatus).set(key, "err");
+      gridUrls = new Map([...gridUrls].filter(([k]) => k !== key));
+    }
   }
 
   async function load() {
     loading = true;
     loadErr = "";
     saves = [];
-    coverUrls = new Map();
-    artStatus = new Map();
+    gridUrls = new Map();
+    iconUrls = new Map();
+    gridStatus = new Map();
+    iconStatus = new Map();
     try {
       saves = await invoke<McSave[]>("list_memcard_saves", { id: emuId, rawId });
     } catch (e) {
@@ -137,8 +155,8 @@
   {#if viewMode === "grid"}
     <div class="grid">
       {#each saves as save, i (save.name)}
-        {@const coverUrl = coverUrls.get(save.name)}
-        {@const status = artStatus.get(save.name)}
+        {@const coverUrl = gridUrls.get(save.name)}
+        {@const status = gridStatus.get(save.name)}
         {@const display = save.title ?? save.serial ?? save.name}
         <a class="card" style="--i: {i}" href={saveHref(save)}>
           <div class="cover">
@@ -148,8 +166,8 @@
                 alt={display}
                 class="cover-img"
                 class:hidden={status !== "ok"}
-                onload={() => onImgLoad(save.name)}
-                onerror={() => onImgErr(save.name)}
+                onload={() => onImgLoad(save.name, "grid")}
+                onerror={() => onImgErr(save.name, "grid")}
               />
             {/if}
             {#if status !== "ok"}
@@ -176,8 +194,8 @@
   {:else}
     <div class="list">
       {#each saves as save, i (save.name)}
-        {@const coverUrl = coverUrls.get(save.name)}
-        {@const status = artStatus.get(save.name)}
+        {@const coverUrl = iconUrls.get(save.name)}
+        {@const status = iconStatus.get(save.name)}
         {@const display = save.title ?? save.serial ?? save.name}
         <a class="row" style="--i: {i}" href={saveHref(save)}>
           <div class="row-thumb">
@@ -187,8 +205,8 @@
                 alt={display}
                 class="thumb-img"
                 class:hidden={status !== "ok"}
-                onload={() => onImgLoad(save.name)}
-                onerror={() => onImgErr(save.name)}
+                onload={() => onImgLoad(save.name, "icon")}
+                onerror={() => onImgErr(save.name, "icon")}
               />
             {/if}
             {#if status !== "ok"}

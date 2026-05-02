@@ -30,8 +30,10 @@
   let loadErr = $state("");
   let viewMode = $state<"grid" | "list">("grid");
 
-  let coverUrls = $state<Map<string, string>>(new Map());
-  let artStatus = $state<Map<string, "loading" | "ok" | "err">>(new Map());
+  let gridUrls = $state<Map<string, string>>(new Map());
+  let iconUrls = $state<Map<string, string>>(new Map());
+  let gridStatus = $state<Map<string, "loading" | "ok" | "err">>(new Map());
+  let iconStatus = $state<Map<string, "loading" | "ok" | "err">>(new Map());
 
   $effect(() => {
     void emuId;
@@ -39,26 +41,37 @@
   });
 
   $effect(() => {
+    const isList = viewMode === "list";
+    const urls = isList ? iconUrls : gridUrls;
+    const status = isList ? iconStatus : gridStatus;
     const pending = entries.filter(
-      (e) => !coverUrls.has(e.raw_id) && !artStatus.has(e.raw_id),
+      (e) => !urls.has(e.raw_id) && !status.has(e.raw_id),
     );
     if (pending.length === 0) return;
-    artStatus = new Map([...artStatus, ...pending.map((e) => [e.raw_id, "loading" as const])]);
+    const next = new Map([
+      ...status,
+      ...pending.map((e) => [e.raw_id, "loading" as const]),
+    ]);
+    if (isList) iconStatus = next;
+    else gridStatus = next;
     for (const entry of pending) {
-      fetchCover(entry.raw_id, entry.title);
+      fetchAsset(entry.raw_id, entry.title, isList ? "icon" : "grid");
     }
   });
 
-  async function fetchCover(rawId: string, title: string) {
+  async function fetchAsset(rawId: string, title: string, kind: "grid" | "icon") {
     try {
-      const url = await invoke<string | null>("fetch_cover_url", { title });
-      if (url) {
-        coverUrls = new Map(coverUrls).set(rawId, url);
+      const url = await invoke<string | null>("fetch_cover_url", { title, kind });
+      if (kind === "icon") {
+        if (url) iconUrls = new Map(iconUrls).set(rawId, url);
+        else iconStatus = new Map(iconStatus).set(rawId, "err");
       } else {
-        artStatus = new Map(artStatus).set(rawId, "err");
+        if (url) gridUrls = new Map(gridUrls).set(rawId, url);
+        else gridStatus = new Map(gridStatus).set(rawId, "err");
       }
     } catch {
-      artStatus = new Map(artStatus).set(rawId, "err");
+      if (kind === "icon") iconStatus = new Map(iconStatus).set(rawId, "err");
+      else gridStatus = new Map(gridStatus).set(rawId, "err");
     }
   }
 
@@ -66,8 +79,10 @@
     loading = true;
     loadErr = "";
     entries = [];
-    coverUrls = new Map();
-    artStatus = new Map();
+    gridUrls = new Map();
+    iconUrls = new Map();
+    gridStatus = new Map();
+    iconStatus = new Map();
     try {
       entries = await invoke<SaveEntry[]>("list_saves", { id: emuId });
     } catch (err) {
@@ -77,13 +92,19 @@
     }
   }
 
-  function onImgLoad(id: string) {
-    artStatus = new Map(artStatus).set(id, "ok");
+  function onImgLoad(id: string, kind: "grid" | "icon") {
+    if (kind === "icon") iconStatus = new Map(iconStatus).set(id, "ok");
+    else gridStatus = new Map(gridStatus).set(id, "ok");
   }
 
-  function onImgErr(id: string) {
-    artStatus = new Map(artStatus).set(id, "err");
-    coverUrls = new Map([...coverUrls].filter(([k]) => k !== id));
+  function onImgErr(id: string, kind: "grid" | "icon") {
+    if (kind === "icon") {
+      iconStatus = new Map(iconStatus).set(id, "err");
+      iconUrls = new Map([...iconUrls].filter(([k]) => k !== id));
+    } else {
+      gridStatus = new Map(gridStatus).set(id, "err");
+      gridUrls = new Map([...gridUrls].filter(([k]) => k !== id));
+    }
   }
 
   function fmtBytes(b: number): string {
@@ -133,8 +154,8 @@
   {#if viewMode === "grid"}
     <div class="grid">
       {#each entries as entry, i (entry.raw_id)}
-        {@const coverUrl = coverUrls.get(entry.raw_id)}
-        {@const status = artStatus.get(entry.raw_id)}
+        {@const coverUrl = gridUrls.get(entry.raw_id)}
+        {@const status = gridStatus.get(entry.raw_id)}
         <a class="card" style="--i: {i}" href={entryHref(entry.raw_id)}>
           <div class="cover">
             {#if coverUrl}
@@ -143,8 +164,8 @@
                 alt={entry.title}
                 class="cover-img"
                 class:hidden={status !== "ok"}
-                onload={() => onImgLoad(entry.raw_id)}
-                onerror={() => onImgErr(entry.raw_id)}
+                onload={() => onImgLoad(entry.raw_id, "grid")}
+                onerror={() => onImgErr(entry.raw_id, "grid")}
               />
             {/if}
             {#if status !== "ok"}
@@ -173,8 +194,8 @@
   {:else}
     <div class="list">
       {#each entries as entry, i (entry.raw_id)}
-        {@const coverUrl = coverUrls.get(entry.raw_id)}
-        {@const status = artStatus.get(entry.raw_id)}
+        {@const coverUrl = iconUrls.get(entry.raw_id)}
+        {@const status = iconStatus.get(entry.raw_id)}
         <a class="row" style="--i: {i}" href={entryHref(entry.raw_id)}>
           <div class="row-thumb">
             {#if coverUrl}
@@ -183,8 +204,8 @@
                 alt={entry.title}
                 class="thumb-img"
                 class:hidden={status !== "ok"}
-                onload={() => onImgLoad(entry.raw_id)}
-                onerror={() => onImgErr(entry.raw_id)}
+                onload={() => onImgLoad(entry.raw_id, "icon")}
+                onerror={() => onImgErr(entry.raw_id, "icon")}
               />
             {/if}
             {#if status !== "ok"}
