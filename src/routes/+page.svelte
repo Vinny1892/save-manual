@@ -5,6 +5,25 @@
 
   let debugMsg = $state("");
 
+  // smoke-test do rclone (temporário)
+  let rcloneTestResult = $state<string>("");
+  let rcloneTesting = $state(false);
+
+  async function testRclone() {
+    rcloneTesting = true;
+    rcloneTestResult = "";
+    try {
+      const v = await invoke<{ version?: string; os?: string; arch?: string; goVersion?: string }>(
+        "rclone_version"
+      );
+      rcloneTestResult = `OK :: rclone ${v.version ?? "?"} on ${v.os ?? "?"}/${v.arch ?? "?"} (${v.goVersion ?? "?"})`;
+    } catch (e) {
+      rcloneTestResult = `ERR :: ${String(e)}`;
+    } finally {
+      rcloneTesting = false;
+    }
+  }
+
   function fmtIndex(i: number) {
     return String(i + 1).padStart(2, "0");
   }
@@ -36,6 +55,17 @@
     <span>{debugMsg}</span>
   </section>
 {/if}
+
+<section class="smoke">
+  <button class="smoke-btn" onclick={testRclone} disabled={rcloneTesting}>
+    {rcloneTesting ? "// testing rclone..." : "[ smoke test :: rclone ]"}
+  </button>
+  {#if rcloneTestResult}
+    <span class="smoke-out" class:ok={rcloneTestResult.startsWith("OK")} class:err={rcloneTestResult.startsWith("ERR")}>
+      {rcloneTestResult}
+    </span>
+  {/if}
+</section>
 
 <div class="list-head">
   <span class="col-idx">no.</span>
@@ -114,6 +144,55 @@
     color: var(--text-bright);
     animation: blink 1.05s steps(1) infinite;
     margin-left: 0.15em;
+  }
+
+  .smoke {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    margin: 0 0 0.8rem;
+    padding: 0.5rem 0.7rem;
+    border: 1px dashed var(--border);
+    background: var(--bg-unit-1);
+    flex-wrap: wrap;
+  }
+
+  .smoke-btn {
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    color: var(--text-soft);
+    font-family: inherit;
+    font-size: 0.74rem;
+    padding: 0.35rem 0.7rem;
+    cursor: pointer;
+    letter-spacing: 0.05em;
+    transition: all 0.14s;
+  }
+
+  .smoke-btn:hover:not(:disabled) {
+    color: var(--text-bright);
+    border-color: var(--accent);
+    background: var(--hover-tint);
+  }
+
+  .smoke-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .smoke-out {
+    font-size: 0.7rem;
+    font-family: inherit;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+  }
+
+  .smoke-out.ok {
+    color: var(--success);
+  }
+
+  .smoke-out.err {
+    color: var(--error, #e05c5c);
   }
 
   .list-head {

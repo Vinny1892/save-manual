@@ -2,6 +2,7 @@ mod db;
 mod detect;
 mod ps2db;
 mod ps2mc;
+mod rclone;
 mod saves;
 mod sync;
 mod titledb;
@@ -477,6 +478,21 @@ async fn detect_save_paths(id: String) -> Result<Vec<detect::DetectCandidate>, S
 }
 
 #[tauri::command]
+async fn rclone_version() -> Result<serde_json::Value, String> {
+    rclone::rpc_json("core/version", serde_json::json!({}))
+}
+
+#[tauri::command]
+async fn rclone_list_remotes() -> Result<Vec<String>, String> {
+    let v = rclone::rpc_json("config/listremotes", serde_json::json!({}))?;
+    let arr = v.get("remotes").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+    Ok(arr
+        .into_iter()
+        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+        .collect())
+}
+
+#[tauri::command]
 async fn list_memcard_saves(
     id: String,
     raw_id: String,
@@ -795,6 +811,8 @@ pub fn run() {
             list_memcard_saves,
             ps2_db_status,
             refresh_ps2_db,
+            rclone_version,
+            rclone_list_remotes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

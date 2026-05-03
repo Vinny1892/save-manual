@@ -42,7 +42,7 @@
       <span class="divider" data-tauri-drag-region>·</span>
       <span class="bar-meta clock" data-tauri-drag-region>{fmtClock(now)}</span>
       <button class="theme-toggle" onclick={toggleTheme} aria-label="toggle theme">
-        {$theme === "dark" ? "[ ☼ ]" : "[ ☾ ]"}
+        {$theme === "dark" ? "[ ☼ ]" : $theme === "light" ? "[ ❄ ]" : "[ ☾ ]"}
       </button>
       <div class="wm-btns">
         <button class="wm-btn" onclick={() => win.minimize()} aria-label="minimizar">─</button>

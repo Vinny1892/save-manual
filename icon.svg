@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- background tile -->
+  <rect width="1024" height="1024" rx="200" fill="#0a0a0c"/>
+
+  <!-- subtle scanline overlay (only visible at large sizes) -->
+  <defs>
+    <pattern id="scan" width="4" height="4" patternUnits="userSpaceOnUse">
+      <rect width="4" height="2" fill="#000" opacity="0.18"/>
+    </pattern>
+  </defs>
+
+  <!-- cartridge body: rounded top, four finger notches at bottom -->
+  <path fill="#e8a04a" d="
+    M 280 220
+    Q 280 180 320 180
+    L 704 180
+    Q 744 180 744 220
+    L 744 700
+    L 696 700 L 696 752 L 644 752 L 644 700
+    L 588 700 L 588 752 L 528 752 L 528 700
+    L 472 700 L 472 752 L 412 752 L 412 700
+    L 356 700 L 356 752 L 296 752 L 296 700
+    L 280 700
+    Z" />
+
+  <!-- recessed label window -->
+  <rect x="332" y="288" width="360" height="284" rx="14" fill="#0a0a0c"/>
+
+  <!-- text-like bars inside the label, amber on dark -->
+  <g fill="#e8a04a" opacity="0.55">
+    <rect x="368" y="332" width="240" height="16" rx="2"/>
+    <rect x="368" y="376" width="288" height="11" rx="2"/>
+    <rect x="368" y="404" width="240" height="11" rx="2"/>
+    <rect x="368" y="432" width="192" height="11" rx="2"/>
+  </g>
+
+  <!-- contact strip suggestion at the bottom of the label -->
+  <g fill="#e8a04a" opacity="0.35">
+    <rect x="368" y="496" width="40" height="48" rx="2"/>
+    <rect x="416" y="496" width="40" height="48" rx="2"/>
+    <rect x="464" y="496" width="40" height="48" rx="2"/>
+    <rect x="512" y="496" width="40" height="48" rx="2"/>
+    <rect x="560" y="496" width="40" height="48" rx="2"/>
+    <rect x="608" y="496" width="40" height="48" rx="2"/>
+  </g>
+
+  <!-- LED bezel + green dot in upper-right of the cartridge -->
+  <rect x="660" y="208" width="64" height="64" rx="8" fill="#0a0a0c"/>
+  <circle cx="692" cy="240" r="28" fill="#7eff8a" opacity="0.22"/>
+  <circle cx="692" cy="240" r="16" fill="#7eff8a"/>
+
+  <!-- scanlines on top of everything (very subtle) -->
+  <rect width="1024" height="1024" rx="200" fill="url(#scan)" opacity="0.5"/>
+</svg>

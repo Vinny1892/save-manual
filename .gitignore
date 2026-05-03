@@ -8,3 +8,10 @@ node_modules
 !.env.example
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# librclone artifacts (rebuilt via scripts/build-librclone.sh per platform)
+/src-tauri/lib/
+
+# local dev config / scratch
+/.claude/
+/possiveisicones/
