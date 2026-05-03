@@ -24,6 +24,7 @@
   let coverUrl = $state<string | null>(null);
   let imgOk = $state(false);
   let loadErr = $state("");
+  let tint = $state<string | null>(null);
 
   $effect(() => {
     void saveName;
@@ -32,11 +33,29 @@
     load();
   });
 
+  // Propagate tint to <html> so app-wide chrome (title bar, scrollbar)
+  // pick it up via global CSS in app.css. Cleared on navigation away.
+  $effect(() => {
+    const root = document.documentElement;
+    if (tint) {
+      root.style.setProperty("--game-tint", tint);
+      root.setAttribute("data-tinted", "save");
+    } else {
+      root.style.removeProperty("--game-tint");
+      root.removeAttribute("data-tinted");
+    }
+    return () => {
+      root.style.removeProperty("--game-tint");
+      root.removeAttribute("data-tinted");
+    };
+  });
+
   async function load() {
     loadErr = "";
     entry = null;
     coverUrl = null;
     imgOk = false;
+    tint = null;
     try {
       const all = await invoke<McSave[]>("list_memcard_saves", { id: emuId, rawId });
       entry = all.find((s) => s.name === saveName) ?? null;
@@ -53,6 +72,11 @@
   async function fetchCover(title: string) {
     try {
       coverUrl = await invoke<string | null>("fetch_cover_url", { title });
+      if (coverUrl) {
+        invoke<string | null>("fetch_cover_tint", { url: coverUrl })
+          .then((t) => { tint = t; })
+          .catch(() => { tint = null; });
+      }
     } catch {
       coverUrl = null;
     }
@@ -68,6 +92,15 @@
     return s.split(/\s+/).slice(0, 2).map((w) => w[0] ?? "").join("").toUpperCase();
   }
 </script>
+
+<div
+  class="page"
+  class:tinted={tint !== null}
+  style={tint ? `--game-tint: ${tint};` : ""}
+>
+{#if tint !== null}
+  <div class="page-tint-bg" aria-hidden="true"></div>
+{/if}
 
 <section class="topnav">
   <a class="back" href="/emulator/{emuId}/saves/{rawId}/games">
@@ -141,6 +174,7 @@
     </div>
   </div>
 {/if}
+</div>
 
 <style>
   .topnav {
@@ -333,5 +367,90 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     flex-shrink: 0;
+  }
+
+  /* ── per-game tint (full takeover, scoped to this page) ── */
+  .page {
+    position: relative;
+  }
+
+  .page-tint-bg {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: -1;
+    background:
+      radial-gradient(ellipse 80% 60% at 50% 25%,
+        rgba(var(--game-tint), 0.35) 0%,
+        rgba(var(--game-tint), 0.18) 35%,
+        rgba(var(--game-tint), 0.06) 70%,
+        transparent 100%);
+    animation: tint-fade-in 0.7s ease-out;
+  }
+
+  @keyframes tint-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  .page.tinted .back {
+    border-color: rgba(var(--game-tint), 0.7);
+    color: rgb(var(--game-tint));
+  }
+  .page.tinted .back:hover {
+    background: rgba(var(--game-tint), 0.15);
+    border-color: rgb(var(--game-tint));
+  }
+  .page.tinted .back-arrow {
+    color: rgb(var(--game-tint));
+  }
+  .page.tinted .nav-title {
+    color: rgba(var(--game-tint), 0.85);
+  }
+
+  .page.tinted .detail {
+    border-color: rgb(var(--game-tint));
+    background:
+      linear-gradient(180deg,
+        rgba(var(--game-tint), 0.45) 0%,
+        rgba(var(--game-tint), 0.30) 60%,
+        rgba(var(--game-tint), 0.20) 100%),
+      var(--bg-unit-1);
+    box-shadow:
+      0 0 0 1px rgba(var(--game-tint), 0.6),
+      0 12px 70px -8px rgba(var(--game-tint), 0.7);
+  }
+
+  .page.tinted .cover-panel {
+    border-right-color: rgb(var(--game-tint));
+    background: rgba(var(--game-tint), 0.15);
+  }
+
+  .page.tinted .game-title {
+    color: rgb(var(--game-tint));
+    text-shadow:
+      0 0 14px rgba(var(--game-tint), 0.85),
+      0 0 28px rgba(var(--game-tint), 0.5);
+  }
+
+  .page.tinted .game-id {
+    color: rgba(var(--game-tint), 0.7);
+  }
+
+  .page.tinted .info-top,
+  .page.tinted .stats {
+    border-bottom-color: rgb(var(--game-tint));
+  }
+
+  .page.tinted .stat-label {
+    color: rgba(var(--game-tint), 0.65);
+  }
+
+  .page.tinted .stat-value {
+    color: rgb(var(--game-tint));
+  }
+
+  .page.tinted .readonly-note {
+    color: rgba(var(--game-tint), 0.65);
   }
 </style>

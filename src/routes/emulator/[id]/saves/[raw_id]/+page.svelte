@@ -26,6 +26,7 @@
   let coverUrl = $state<string | null>(null);
   let imgOk    = $state(false);
   let loadErr  = $state("");
+  let tint     = $state<string | null>(null); // "r, g, b" — null = no theming
 
   // actions
   let syncing  = $state(false);
@@ -39,11 +40,29 @@
     loadEntry();
   });
 
+  // Propagate tint to <html> so app-wide chrome (title bar, scrollbar) can
+  // pick it up via global CSS in app.css. Cleared on navigation away.
+  $effect(() => {
+    const root = document.documentElement;
+    if (tint) {
+      root.style.setProperty("--game-tint", tint);
+      root.setAttribute("data-tinted", "save");
+    } else {
+      root.style.removeProperty("--game-tint");
+      root.removeAttribute("data-tinted");
+    }
+    return () => {
+      root.style.removeProperty("--game-tint");
+      root.removeAttribute("data-tinted");
+    };
+  });
+
   async function loadEntry() {
     loadErr = "";
     entry = null;
     coverUrl = null;
     imgOk = false;
+    tint = null;
     try {
       entry = await invoke<SaveEntry | null>("get_save_entry", { id: emuId, rawId });
       if (entry) fetchCover(entry.title);
@@ -55,6 +74,13 @@
   async function fetchCover(title: string) {
     try {
       coverUrl = await invoke<string | null>("fetch_cover_url", { title });
+      if (coverUrl) {
+        // Tint extraction runs in Rust to avoid the Tauri webview CORS
+        // restriction on the SGDB CDN (which taints the canvas client-side).
+        invoke<string | null>("fetch_cover_tint", { url: coverUrl })
+          .then((t) => { tint = t; })
+          .catch(() => { tint = null; });
+      }
     } catch {
       coverUrl = null;
     }
@@ -107,6 +133,15 @@
     return title.split(" ").slice(0, 2).map(w => w[0]).join("").toUpperCase();
   }
 </script>
+
+<div
+  class="page"
+  class:tinted={tint !== null}
+  style={tint ? `--game-tint: ${tint};` : ""}
+>
+{#if tint !== null}
+  <div class="page-tint-bg" aria-hidden="true"></div>
+{/if}
 
 <section class="topnav">
   <button class="back" onclick={() => goto(`/emulator/${emuId}/saves`)}>
@@ -204,6 +239,7 @@
     </div>
   </div>
 {/if}
+</div>
 
 <style>
   .topnav {
@@ -254,6 +290,47 @@
     letter-spacing: 0.06em;
   }
 
+
+  /* ── page wrapper / fullscreen tint backdrop ── */
+  .page {
+    position: relative;
+  }
+
+  .page-tint-bg {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: -1;
+    background:
+      radial-gradient(ellipse 80% 60% at 50% 25%,
+        rgba(var(--game-tint), 0.35) 0%,
+        rgba(var(--game-tint), 0.18) 35%,
+        rgba(var(--game-tint), 0.06) 70%,
+        transparent 100%);
+    animation: tint-fade-in 0.7s ease-out;
+  }
+
+  @keyframes tint-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  /* ── topnav (tinted) ── */
+  .page.tinted .back {
+    border-color: rgba(var(--game-tint), 0.7);
+    color: rgb(var(--game-tint));
+  }
+  .page.tinted .back:hover {
+    background: rgba(var(--game-tint), 0.15);
+    border-color: rgb(var(--game-tint));
+  }
+  .page.tinted .back-arrow {
+    color: rgb(var(--game-tint));
+  }
+  .page.tinted .nav-title {
+    color: rgba(var(--game-tint), 0.85);
+  }
+
   /* ── layout ── */
   .detail {
     display: grid;
@@ -262,11 +339,31 @@
     background: var(--bg-unit-1);
     overflow: hidden;
     margin-top: 6rem;
+    transition: border-color 0.6s, box-shadow 0.6s, background 0.6s;
+  }
+
+  /* full takeover: panel bg solid-ish in tint, all neutrals replaced. */
+  .page.tinted .detail {
+    border-color: rgb(var(--game-tint));
+    background:
+      linear-gradient(180deg,
+        rgba(var(--game-tint), 0.45) 0%,
+        rgba(var(--game-tint), 0.30) 60%,
+        rgba(var(--game-tint), 0.20) 100%),
+      var(--bg-unit-1);
+    box-shadow:
+      0 0 0 1px rgba(var(--game-tint), 0.6),
+      0 12px 70px -8px rgba(var(--game-tint), 0.7);
   }
 
   /* ── cover panel ── */
   .cover-panel {
     border-right: 1px solid var(--border);
+  }
+
+  .page.tinted .cover-panel {
+    border-right-color: rgb(var(--game-tint));
+    background: rgba(var(--game-tint), 0.15);
   }
 
   .cover {
@@ -332,6 +429,50 @@
     font-weight: 400;
     margin: 0;
     line-height: 1.4;
+    transition: text-shadow 0.6s;
+  }
+
+  .page.tinted .game-title {
+    color: rgb(var(--game-tint));
+    text-shadow:
+      0 0 14px rgba(var(--game-tint), 0.85),
+      0 0 28px rgba(var(--game-tint), 0.5);
+  }
+
+  .page.tinted .game-id {
+    color: rgba(var(--game-tint), 0.7);
+  }
+
+  .page.tinted .info-top {
+    border-bottom-color: rgb(var(--game-tint));
+  }
+
+  .page.tinted .stats {
+    border-bottom-color: rgb(var(--game-tint));
+  }
+
+  .page.tinted .stat-label {
+    color: rgba(var(--game-tint), 0.65);
+  }
+
+  .page.tinted .stat-value {
+    color: rgb(var(--game-tint));
+  }
+
+  .page.tinted .action-btn {
+    border-color: rgba(var(--game-tint), 0.7);
+    color: rgba(var(--game-tint), 0.92);
+  }
+
+  .page.tinted .action-btn:hover:not(:disabled) {
+    color: rgb(var(--game-tint));
+    border-color: rgb(var(--game-tint));
+    background: rgba(var(--game-tint), 0.18);
+    box-shadow: 0 0 14px -2px rgba(var(--game-tint), 0.6);
+  }
+
+  .page.tinted .readonly-note {
+    color: rgba(var(--game-tint), 0.65);
   }
 
   .game-id {

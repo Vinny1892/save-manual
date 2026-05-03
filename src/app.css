@@ -411,3 +411,76 @@ main {
   border-color: var(--danger-border);
   background: var(--danger-bg);
 }
+
+/* =====================================================================
+   PER-GAME TINT (set on <html data-tinted="save"> by save detail page)
+   --game-tint is a "r, g, b" string. Applies only when --game-tint is
+   present, so other pages stay neutral.
+   ===================================================================== */
+
+html[data-tinted] .bar {
+  border-bottom-color: rgb(var(--game-tint));
+  box-shadow: 0 1px 24px -4px rgba(var(--game-tint), 0.6);
+  background:
+    linear-gradient(180deg,
+      rgba(var(--game-tint), 0.30),
+      rgba(var(--game-tint), 0.18)),
+    var(--bg-elev);
+  color: rgb(var(--game-tint));
+  transition:
+    border-color 0.5s,
+    background 0.5s,
+    box-shadow 0.5s,
+    color 0.5s;
+}
+
+html[data-tinted] .bar .bar-label,
+html[data-tinted] .bar .bar-meta,
+html[data-tinted] .bar .clock {
+  color: rgb(var(--game-tint));
+}
+
+html[data-tinted] .theme-toggle,
+html[data-tinted] .wm-btn {
+  border-color: rgba(var(--game-tint), 0.5);
+  color: rgba(var(--game-tint), 0.85);
+}
+
+html[data-tinted] .theme-toggle:hover,
+html[data-tinted] .wm-btn:hover {
+  border-color: rgb(var(--game-tint));
+  color: rgb(var(--game-tint));
+  background: rgba(var(--game-tint), 0.18);
+}
+
+/* Webkit scrollbar (works in Tauri webview / Chromium / Edge) */
+html[data-tinted] ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+html[data-tinted] ::-webkit-scrollbar-track {
+  background: rgba(var(--game-tint), 0.06);
+}
+
+html[data-tinted] ::-webkit-scrollbar-thumb {
+  background: rgba(var(--game-tint), 0.55);
+  border-radius: 0;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 0.2s;
+}
+
+html[data-tinted] ::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--game-tint));
+  background-clip: padding-box;
+}
+
+html[data-tinted] ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox fallback (less granular but still reactive) */
+html[data-tinted] {
+  scrollbar-color: rgba(var(--game-tint), 0.6) rgba(var(--game-tint), 0.08);
+}

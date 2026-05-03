@@ -472,6 +472,79 @@ async fn fetch_cover_url(
     Ok(assets["data"][0]["url"].as_str().map(|s| s.to_string()))
 }
 
+/// Downloads a cover image and computes a saturation-weighted dominant color.
+/// Done in Rust to avoid the Tauri webview CORS issue with the SGDB CDN
+/// (which would taint the canvas in the frontend).
+#[tauri::command]
+async fn fetch_cover_tint(url: String) -> Result<Option<String>, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("save-sync/0.1")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("http: {e}"))?;
+    let status = resp.status();
+    let bytes = resp.bytes().await.map_err(|e| format!("body: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("http {} from {} ({} B)", status, url, bytes.len()));
+    }
+
+    let img = image::load_from_memory(&bytes)
+        .map_err(|e| format!("decode ({} B): {e}", bytes.len()))?;
+    // Downscale aggressively — pixel sampling is approximate by nature, so
+    // 32x48 is plenty and keeps the loop fast.
+    let small = img.thumbnail(32, 48).to_rgb8();
+
+    let mut acc_r: f64 = 0.0;
+    let mut acc_g: f64 = 0.0;
+    let mut acc_b: f64 = 0.0;
+    let mut total: f64 = 0.0;
+
+    for px in small.pixels() {
+        let r = px.0[0] as f64;
+        let g = px.0[1] as f64;
+        let b = px.0[2] as f64;
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        if max < 35.0 || min > 225.0 {
+            continue; // skip near-black / near-white
+        }
+        let sat = if max == 0.0 { 0.0 } else { (max - min) / max };
+        let w = sat * 4.0 + 1.0;
+        acc_r += r * w;
+        acc_g += g * w;
+        acc_b += b * w;
+        total += w;
+    }
+
+    if total == 0.0 {
+        return Ok(None);
+    }
+    let mut r = acc_r / total;
+    let mut g = acc_g / total;
+    let mut b = acc_b / total;
+
+    // Floor brightness so tinted text/borders are always legible against
+    // the dark/light backgrounds. Perceived luminance via Rec. 709.
+    let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if lum < 140.0 && lum > 0.0 {
+        let scale = 140.0 / lum;
+        r = (r * scale).min(255.0);
+        g = (g * scale).min(255.0);
+        b = (b * scale).min(255.0);
+    }
+
+    Ok(Some(format!(
+        "{}, {}, {}",
+        r.round() as u32,
+        g.round() as u32,
+        b.round() as u32
+    )))
+}
+
 #[tauri::command]
 async fn detect_save_paths(id: String) -> Result<Vec<detect::DetectCandidate>, String> {
     Ok(detect::detect_paths(&id))
@@ -800,6 +873,7 @@ pub fn run() {
             get_eden_uuid,
             list_saves,
             fetch_cover_url,
+            fetch_cover_tint,
             get_save_entry,
             delete_save_entry,
             sync_one_save,
