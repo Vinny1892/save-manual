@@ -1,3 +1,4 @@
+mod backend;
 mod db;
 mod detect;
 mod ps2db;
@@ -11,13 +12,14 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::time::Duration;
 
-use chrono::Local;
-use db::Emulator;
+use backend::Backend;
+use chrono::{Local, Utc};
+use db::{Emulator, HistorySettings};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::Connection;
 use serde::Serialize;
 use sysinfo::{ProcessesToUpdate, System};
-use sync::{copy_eden_saves, copy_saves, make_watcher};
+use sync::make_watcher;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{mpsc, Mutex};
 
@@ -85,13 +87,20 @@ async fn get_emulator(id: String, state: State<'_, AppState>) -> Result<Emulator
 async fn set_emulator_paths(
     id: String,
     source_path: String,
+    dest_kind: String,
+    dest_remote: String,
     dest_path: String,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let kind = match dest_kind.as_str() {
+        "local" | "rclone" => dest_kind.as_str(),
+        "" => "local",
+        _ => return Err(format!("dest_kind inválido: {dest_kind}")),
+    };
     {
         let s = state.lock().await;
-        db::set_paths(&s.conn, &id, &source_path, &dest_path)?;
+        db::set_paths(&s.conn, &id, &source_path, kind, &dest_remote, &dest_path)?;
     }
     emit_changed(&app, &state, &id).await;
     Ok(())
@@ -137,22 +146,23 @@ async fn sync_now(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let (source, dest) = {
+    let (source, emu, history) = {
         let s = state.lock().await;
         let emu = db::get(&s.conn, &id)?;
         if !emu.enabled {
             return Err("Emulador desativado".into());
         }
-        if emu.source_path.is_empty() || emu.dest_path.is_empty() {
-            return Err("Configuração incompleta".into());
-        }
-        (
-            std::path::PathBuf::from(&emu.source_path),
-            std::path::PathBuf::from(&emu.dest_path),
-        )
+        validate_config(&emu)?;
+        let history = db::get_history_settings(&s.conn, &id)?;
+        (std::path::PathBuf::from(&emu.source_path), emu, history)
     };
 
-    let result = do_sync(&id, &source, &dest);
+    let outcome = do_sync(&emu, &source, &history);
+    if matches!(&outcome, Ok(SyncOutcome { initial: true })) {
+        let s = state.lock().await;
+        let _ = db::mark_bisync_initialized(&s.conn, &id);
+    }
+    let result = outcome.map(|_| ());
     record_result(&id, &result, &state).await;
     emit_changed(&app, &state, &id).await;
     result
@@ -164,7 +174,7 @@ async fn start_watch(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let (source, dest) = {
+    let (source, emu) = {
         let s = state.lock().await;
         if s.watchers.contains_key(&id) {
             return Ok(());
@@ -173,13 +183,8 @@ async fn start_watch(
         if !emu.enabled {
             return Err("Emulador desativado".into());
         }
-        if emu.source_path.is_empty() || emu.dest_path.is_empty() {
-            return Err("Configuração incompleta".into());
-        }
-        (
-            std::path::PathBuf::from(&emu.source_path),
-            std::path::PathBuf::from(&emu.dest_path),
-        )
+        validate_config(&emu)?;
+        (std::path::PathBuf::from(&emu.source_path), emu)
     };
 
     let (event_tx, mut event_rx) = mpsc::channel::<()>(16);
@@ -203,8 +208,17 @@ async fn start_watch(
                             _ => break,
                         }
                     }
-                    let result = do_sync(&id_clone, &source, &dest);
                     let app_state = app_clone.state::<AppState>();
+                    let history = {
+                        let s = app_state.lock().await;
+                        db::get_history_settings(&s.conn, &id_clone).unwrap_or_else(|_| HistorySettings::defaults_for(&id_clone))
+                    };
+                    let outcome = do_sync(&emu, &source, &history);
+                    if matches!(&outcome, Ok(SyncOutcome { initial: true })) {
+                        let s = app_state.lock().await;
+                        let _ = db::mark_bisync_initialized(&s.conn, &id_clone);
+                    }
+                    let result = outcome.map(|_| ());
                     record_result(&id_clone, &result, &app_state).await;
                     emit_changed(&app_clone, &app_state, &id_clone).await;
                 }
@@ -238,7 +252,7 @@ async fn start_proc_watch(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let (source, dest, proc_name) = {
+    let (source, emu, proc_name) = {
         let s = state.lock().await;
         if s.proc_watchers.contains_key(&id) {
             return Ok(());
@@ -250,14 +264,9 @@ async fn start_proc_watch(
         if emu.process_name.is_empty() {
             return Err("Nome do processo não configurado".into());
         }
-        if emu.source_path.is_empty() || emu.dest_path.is_empty() {
-            return Err("Configuração incompleta".into());
-        }
-        (
-            std::path::PathBuf::from(&emu.source_path),
-            std::path::PathBuf::from(&emu.dest_path),
-            emu.process_name.clone(),
-        )
+        validate_config(&emu)?;
+        let proc_name = emu.process_name.clone();
+        (std::path::PathBuf::from(&emu.source_path), emu, proc_name)
     };
 
     let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
@@ -277,8 +286,18 @@ async fn start_proc_watch(
                         .any(|p| proc_matches(p.name(), &proc_name));
 
                     if was_running && !is_running {
-                        let result = do_sync(&id_clone, &source, &dest);
                         let app_state = app_clone.state::<AppState>();
+                        let history = {
+                            let s = app_state.lock().await;
+                            db::get_history_settings(&s.conn, &id_clone)
+                                .unwrap_or_else(|_| HistorySettings::defaults_for(&id_clone))
+                        };
+                        let outcome = do_sync(&emu, &source, &history);
+                        if matches!(&outcome, Ok(SyncOutcome { initial: true })) {
+                            let s = app_state.lock().await;
+                            let _ = db::mark_bisync_initialized(&s.conn, &id_clone);
+                        }
+                        let result = outcome.map(|_| ());
                         record_result(&id_clone, &result, &app_state).await;
                         emit_changed(&app_clone, &app_state, &id_clone).await;
                     }
@@ -386,15 +405,14 @@ async fn sync_one_save(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let (source, dest) = {
+    let (source, emu) = {
         let s = state.lock().await;
         let emu = db::get(&s.conn, &id)?;
-        if emu.source_path.is_empty() || emu.dest_path.is_empty() {
-            return Err("Configuração incompleta".into());
-        }
-        (emu.source_path, emu.dest_path)
+        validate_config(&emu)?;
+        (emu.source_path.clone(), emu)
     };
-    let result = saves::sync_one(&id, &source, &dest, &raw_id);
+    let backend = Backend::for_emulator(&emu)?;
+    let result = saves::sync_one(&id, &source, &backend, &raw_id);
     record_result(&id, &result, &state).await;
     emit_changed(&app, &state, &id).await;
     result
@@ -557,12 +575,57 @@ async fn rclone_version() -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 async fn rclone_list_remotes() -> Result<Vec<String>, String> {
-    let v = rclone::rpc_json("config/listremotes", serde_json::json!({}))?;
-    let arr = v.get("remotes").and_then(|r| r.as_array()).cloned().unwrap_or_default();
-    Ok(arr
-        .into_iter()
-        .filter_map(|x| x.as_str().map(|s| s.to_string()))
-        .collect())
+    rclone::list_remotes()
+}
+
+#[tauri::command]
+async fn rclone_create_s3_remote(config: rclone::S3RemoteConfig) -> Result<(), String> {
+    rclone::create_s3_remote(&config)
+}
+
+#[tauri::command]
+async fn rclone_delete_remote(name: String) -> Result<(), String> {
+    rclone::delete_remote(&name)
+}
+
+#[tauri::command]
+async fn rclone_get_remote(name: String) -> Result<serde_json::Value, String> {
+    rclone::get_remote(&name)
+}
+
+#[tauri::command]
+async fn rclone_test_remote(name: String, path: Option<String>) -> Result<(), String> {
+    rclone::test_remote(&name, path.as_deref().unwrap_or(""))
+}
+
+#[tauri::command]
+async fn get_history_settings(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<HistorySettings, String> {
+    let s = state.lock().await;
+    db::get_history_settings(&s.conn, &id)
+}
+
+#[tauri::command]
+async fn set_history_settings(
+    settings: HistorySettings,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    {
+        let s = state.lock().await;
+        db::set_history_settings(&s.conn, &settings)?;
+    }
+    // Emit a small ping so the UI knows to refresh (paths card already
+    // listens on emulator-changed, we piggyback for consistency).
+    let _ = app.emit("history-settings-changed", &settings.emulator_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn supports_incremental_history(id: String) -> Result<bool, String> {
+    Ok(db::supports_incremental_history(&id))
 }
 
 #[tauri::command]
@@ -719,14 +782,143 @@ async fn stop_proc_watch_inner(id: &str, state: &State<'_, AppState>) -> Result<
     Ok(())
 }
 
-fn do_sync(id: &str, source: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
-    let emu_dest = dest.join(id);
-    std::fs::create_dir_all(&emu_dest).map_err(|e| e.to_string())?;
-    if id == "eden" {
-        copy_eden_saves(source, &emu_dest)
-    } else {
-        copy_saves(source, &emu_dest)
+/// Per-emulator list of subtrees that participate in sync. Anything outside
+/// these is ignored — Eden's NAND has gigabytes of system content we don't
+/// want to mirror, so we whitelist only the save-bearing folders.
+fn sync_subtrees(emu_id: &str) -> &'static [&'static str] {
+    match emu_id {
+        "eden" => &["system/save/8000000000000010", "user/save"],
+        // pcsx2/rpcs3: bisync the entire source folder (memcards dir / dev_hdd0).
+        _ => &[""],
     }
+}
+
+/// Outcome of a do_sync run.
+struct SyncOutcome {
+    /// True if this run was the first bisync for the pair (used `--resync`).
+    initial: bool,
+}
+
+fn do_sync(
+    emu: &Emulator,
+    source: &std::path::Path,
+    history: &HistorySettings,
+) -> Result<SyncOutcome, String> {
+    let backend = Backend::for_emulator(emu)?;
+    backend.ensure_dir()?;
+
+    if !history.bisync_initialized {
+        return do_initial_bisync(emu, source, &backend).map(|()| SyncOutcome { initial: true });
+    }
+
+    let ts = Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
+
+    // Full-mode snapshot, when enabled, is taken BEFORE bisync — captures
+    // the entire live state about to be overwritten/merged. Independent of
+    // incremental_enabled: both can be on, in which case `.history/<ts>/`
+    // ends up with both `full/` and `delta/...` subdirs.
+    let take_full = history.enabled && history.full_enabled;
+    let track_delta = history.enabled && history.incremental_enabled;
+
+    if take_full {
+        backend.snapshot_full(&ts)?;
+    }
+
+    for sub in sync_subtrees(&emu.id) {
+        let local = if sub.is_empty() {
+            source.to_path_buf()
+        } else {
+            source.join(sub)
+        };
+        // Tolerate missing source subtrees (e.g. fresh install of an emulator
+        // that hasn't created its save folder yet). Bisync against an empty
+        // local dir works, but the dir must exist.
+        std::fs::create_dir_all(&local).ok();
+
+        let path1 = local.to_string_lossy().into_owned();
+        let path2 = backend.live_fs_at(sub);
+        let backupdir2 = if track_delta {
+            Some(backend.snapshot_delta_fs_at(&ts, sub))
+        } else {
+            None
+        };
+
+        rclone::bisync(&rclone::BisyncOpts {
+            path1: &path1,
+            path2: &path2,
+            backup_dir2: backupdir2.as_deref(),
+            conflict_resolve: "newer",
+            resync: false,
+            resync_mode: "newer",
+        })?;
+    }
+
+    Ok(SyncOutcome { initial: false })
+}
+
+/// First-ever bisync for this pair. We pick `--resync-mode` automatically
+/// based on which side already has data:
+///   - only local has data    → "path1" (push to empty cloud)
+///   - only remote has data   → "path2" (pull to empty PC — preserves cloud)
+///   - both have data         → "newer" (per-file merge; conflicts surface
+///                              on subsequent runs through conflict_resolve)
+///   - neither has data       → error
+fn do_initial_bisync(
+    emu: &Emulator,
+    source: &std::path::Path,
+    backend: &Backend,
+) -> Result<(), String> {
+    let local_has = source
+        .read_dir()
+        .ok()
+        .and_then(|mut d| d.next())
+        .is_some();
+    let remote_has = backend.live_has_data().unwrap_or(false);
+
+    let resync_mode = match (local_has, remote_has) {
+        (false, false) => {
+            return Err(
+                "nada para sincronizar — origem e destino vazios. coloque saves em algum lugar primeiro.".into(),
+            );
+        }
+        (true, false) => "path1",
+        (false, true) => "path2",
+        (true, true) => "newer",
+    };
+
+    for sub in sync_subtrees(&emu.id) {
+        let local = if sub.is_empty() {
+            source.to_path_buf()
+        } else {
+            source.join(sub)
+        };
+        std::fs::create_dir_all(&local).ok();
+
+        let path1 = local.to_string_lossy().into_owned();
+        let path2 = backend.live_fs_at(sub);
+        rclone::bisync(&rclone::BisyncOpts {
+            path1: &path1,
+            path2: &path2,
+            backup_dir2: None, // first run never writes history
+            conflict_resolve: "newer",
+            resync: true,
+            resync_mode,
+        })?;
+    }
+    Ok(())
+}
+
+fn validate_config(emu: &Emulator) -> Result<(), String> {
+    if emu.source_path.is_empty() {
+        return Err("Configuração incompleta: source_path".into());
+    }
+    if emu.dest_path.is_empty() {
+        return Err("Configuração incompleta: dest_path".into());
+    }
+    if emu.dest_kind == "rclone" && emu.dest_remote.is_empty() {
+        return Err("Configuração incompleta: rclone remote".into());
+    }
+    Ok(())
 }
 
 async fn record_result(id: &str, result: &Result<(), String>, state: &State<'_, AppState>) {
@@ -887,7 +1079,105 @@ pub fn run() {
             refresh_ps2_db,
             rclone_version,
             rclone_list_remotes,
+            rclone_create_s3_remote,
+            rclone_delete_remote,
+            rclone_get_remote,
+            rclone_test_remote,
+            get_history_settings,
+            set_history_settings,
+            supports_incremental_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn emu(id: &str, source: &str, kind: &str, remote: &str, path: &str) -> Emulator {
+        Emulator {
+            id: id.into(),
+            name: String::new(),
+            hint: String::new(),
+            source_path: source.into(),
+            dest_kind: kind.into(),
+            dest_remote: remote.into(),
+            dest_path: path.into(),
+            enabled: true,
+            last_sync: None,
+            last_error: None,
+            process_name: String::new(),
+        }
+    }
+
+    // ─── sync_subtrees ────────────────────────────────────────────────────
+
+    #[test]
+    fn sync_subtrees_eden_has_profile_and_user_save() {
+        let subs = sync_subtrees("eden");
+        assert_eq!(subs.len(), 2);
+        assert!(subs.contains(&"system/save/8000000000000010"));
+        assert!(subs.contains(&"user/save"));
+    }
+
+    #[test]
+    fn sync_subtrees_pcsx2_is_single_empty_string() {
+        // Empty string means "sync the source root directly" — pcsx2's
+        // memcards folder IS the unit.
+        assert_eq!(sync_subtrees("pcsx2"), &[""]);
+    }
+
+    #[test]
+    fn sync_subtrees_rpcs3_is_single_root() {
+        assert_eq!(sync_subtrees("rpcs3"), &[""]);
+    }
+
+    #[test]
+    fn sync_subtrees_unknown_emu_defaults_to_root() {
+        // Future emulators get the root-sync default rather than panicking.
+        assert_eq!(sync_subtrees("duckstation"), &[""]);
+    }
+
+    // ─── validate_config ──────────────────────────────────────────────────
+
+    #[test]
+    fn validate_rejects_empty_source() {
+        let e = emu("eden", "", "local", "", "/dest");
+        assert!(validate_config(&e).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_dest_path() {
+        let e = emu("eden", "/src", "local", "", "");
+        assert!(validate_config(&e).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_rclone_without_remote_name() {
+        // dest_kind="rclone" + empty dest_remote is incoherent — must error
+        // even when dest_path is provided.
+        let e = emu("eden", "/src", "rclone", "", "bucket/path");
+        assert!(validate_config(&e).is_err());
+    }
+
+    #[test]
+    fn validate_accepts_local_complete() {
+        let e = emu("eden", "/src", "local", "", "/dest");
+        assert!(validate_config(&e).is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_rclone_complete() {
+        let e = emu("eden", "/src", "rclone", "s3", "bucket/path");
+        assert!(validate_config(&e).is_ok());
+    }
+
+    #[test]
+    fn validate_local_ignores_empty_dest_remote() {
+        // dest_remote is irrelevant when dest_kind == "local" — having a stale
+        // value from a previous rclone config must not fail validation.
+        let e = emu("eden", "/src", "local", "s3", "/dest");
+        assert!(validate_config(&e).is_ok());
+    }
 }

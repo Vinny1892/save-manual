@@ -60,6 +60,9 @@
   <button class="smoke-btn" onclick={testRclone} disabled={rcloneTesting}>
     {rcloneTesting ? "// testing rclone..." : "[ smoke test :: rclone ]"}
   </button>
+  <button class="smoke-btn" onclick={() => goto('/remotes')}>
+    [ manage remotes ]
+  </button>
   {#if rcloneTestResult}
     <span class="smoke-out" class:ok={rcloneTestResult.startsWith("OK")} class:err={rcloneTestResult.startsWith("ERR")}>
       {rcloneTestResult}

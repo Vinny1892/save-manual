@@ -1,10 +1,14 @@
 import { writable, get } from "svelte/store";
 
+export type DestKind = "local" | "rclone";
+
 export interface EmulatorView {
   id: string;
   name: string;
   hint: string;
   source_path: string;
+  dest_kind: DestKind;
+  dest_remote: string;
   dest_path: string;
   enabled: boolean;
   watching: boolean;

@@ -30,6 +30,21 @@
   let ps2Db = $state<TitleDbStatus | null>(null);
   let ps2DbErr = $state("");
 
+  interface HistorySettings {
+    emulator_id: string;
+    enabled: boolean;
+    incremental_enabled: boolean;
+    full_enabled: boolean;
+    retention_days: number;
+    retention_max_mb: number;
+    bisync_initialized: boolean;
+  }
+  let history = $state<HistorySettings | null>(null);
+  let historyErr = $state("");
+  let savingHistory = $state(false);
+  let historyDraft = $state<HistorySettings | null>(null);
+  let allowsIncremental = $state(true);
+
   const current = derived(
     [emulators, page],
     ([$emulators, $page]) => $emulators.find((e) => e.id === $page.params.id),
@@ -37,6 +52,10 @@
 
   let sourceDraft = $state("");
   let destDraft = $state("");
+  let destKindDraft = $state<"local" | "rclone">("local");
+  let destRemoteDraft = $state("");
+  let availableRemotes = $state<string[]>([]);
+  let remotesErr = $state("");
   let lastSeenId = "";
 
   $effect(() => {
@@ -45,16 +64,100 @@
     if (emu.id !== lastSeenId) {
       sourceDraft = emu.source_path;
       destDraft = emu.dest_path;
+      destKindDraft = emu.dest_kind || "local";
+      destRemoteDraft = emu.dest_remote || "";
       procNameDraft = emu.process_name;
       lastSeenId = emu.id;
       detectCandidates = [];
       detectDone = false;
       edenUuid = null;
+      history = null;
+      historyDraft = null;
+      historyErr = "";
       if (emu.id === "eden" && emu.source_path) {
         refreshEdenUuid(emu.source_path);
       }
+      loadHistorySettings(emu.id);
     }
   });
+
+  async function loadHistorySettings(id: string) {
+    historyErr = "";
+    try {
+      const [s, allows] = await Promise.all([
+        invoke<HistorySettings>("get_history_settings", { id }),
+        invoke<boolean>("supports_incremental_history", { id }),
+      ]);
+      history = s;
+      historyDraft = { ...s };
+      allowsIncremental = allows;
+    } catch (e) {
+      historyErr = String(e);
+    }
+  }
+
+  function historyDirty() {
+    if (!history || !historyDraft) return false;
+    return (
+      history.enabled !== historyDraft.enabled ||
+      history.incremental_enabled !== historyDraft.incremental_enabled ||
+      history.full_enabled !== historyDraft.full_enabled ||
+      history.retention_days !== historyDraft.retention_days ||
+      history.retention_max_mb !== historyDraft.retention_max_mb
+    );
+  }
+
+  function historyInvalid() {
+    if (!historyDraft) return true;
+    // When enabled, at least one mode must be picked. UI prevents this but
+    // the backend will reject anyway — surface it before they hit commit.
+    return (
+      historyDraft.enabled &&
+      !historyDraft.incremental_enabled &&
+      !historyDraft.full_enabled
+    );
+  }
+
+  /// Returns true iff toggling `mode` off would leave zero modes selected
+  /// while history is enabled. Disables that checkbox so user can't unselect
+  /// the last one.
+  function lockOff(mode: "incremental" | "full"): boolean {
+    if (!historyDraft || !historyDraft.enabled) return false;
+    const other =
+      mode === "incremental"
+        ? historyDraft.full_enabled
+        : historyDraft.incremental_enabled;
+    const self =
+      mode === "incremental"
+        ? historyDraft.incremental_enabled
+        : historyDraft.full_enabled;
+    return self && !other; // self is on AND would be the only one left
+  }
+
+  async function saveHistory() {
+    if (!historyDraft) return;
+    savingHistory = true;
+    historyErr = "";
+    try {
+      await invoke("set_history_settings", { settings: historyDraft });
+      history = { ...historyDraft };
+    } catch (e) {
+      historyErr = String(e);
+    } finally {
+      savingHistory = false;
+    }
+  }
+
+  async function loadRemotes() {
+    remotesErr = "";
+    try {
+      availableRemotes = (await invoke<string[]>("rclone_list_remotes")).map((r) =>
+        r.replace(/:$/, ""),
+      );
+    } catch (e) {
+      remotesErr = String(e);
+    }
+  }
 
   async function pickFolder(target: "source" | "dest") {
     debugMsg = "";
@@ -76,6 +179,8 @@
       await invoke("set_emulator_paths", {
         id: emu.id,
         sourcePath: sourceDraft,
+        destKind: destKindDraft,
+        destRemote: destKindDraft === "rclone" ? destRemoteDraft : "",
         destPath: destDraft,
       });
       if (emu.id === "eden" && sourceDraft) refreshEdenUuid(sourceDraft);
@@ -155,7 +260,12 @@
   }
 
   function pathDirty(emu: EmulatorView) {
-    return sourceDraft !== emu.source_path || destDraft !== emu.dest_path;
+    return (
+      sourceDraft !== emu.source_path ||
+      destDraft !== emu.dest_path ||
+      destKindDraft !== (emu.dest_kind || "local") ||
+      destRemoteDraft !== (emu.dest_remote || "")
+    );
   }
 
   async function detectPaths(emu: EmulatorView) {
@@ -231,6 +341,7 @@
   onMount(() => {
     loadTitleDbStatus();
     loadPs2DbStatus();
+    loadRemotes();
     const u1 = listen("title-db-status", () => loadTitleDbStatus());
     const u2 = listen("ps2-db-status", () => loadPs2DbStatus());
     return () => {
@@ -372,21 +483,91 @@
     </div>
 
     <div class="field">
-      <label class="field-label" for="dest-path">destination / mirror dir</label>
-      <div class="field-row">
-        <input
-          id="dest-path"
-          type="text"
-          class="field-input"
-          bind:value={destDraft}
-          placeholder="C:\path\to\backup"
+      <span class="field-label">destination kind</span>
+      <div class="kind-toggle">
+        <button
+          type="button"
+          class="kind-opt"
+          class:active={destKindDraft === "local"}
+          onclick={() => (destKindDraft = "local")}
           disabled={!emu.enabled}
-        />
-        <button class="btn btn-thin" onclick={() => pickFolder("dest")} disabled={!emu.enabled}>
-          [ browse ]
+        >
+          [ local ]
+        </button>
+        <button
+          type="button"
+          class="kind-opt"
+          class:active={destKindDraft === "rclone"}
+          onclick={() => (destKindDraft = "rclone")}
+          disabled={!emu.enabled}
+        >
+          [ rclone ]
         </button>
       </div>
     </div>
+
+    {#if destKindDraft === "rclone"}
+      <div class="field">
+        <label class="field-label" for="dest-remote">rclone remote</label>
+        <div class="field-row">
+          <select
+            id="dest-remote"
+            class="field-input"
+            bind:value={destRemoteDraft}
+            disabled={!emu.enabled}
+          >
+            <option value="" disabled>// selecione…</option>
+            {#each availableRemotes as r (r)}
+              <option value={r}>{r}</option>
+            {/each}
+          </select>
+          <button
+            class="btn btn-thin"
+            onclick={() => goto("/remotes")}
+            disabled={!emu.enabled}
+          >
+            [ manage ]
+          </button>
+        </div>
+        {#if remotesErr}
+          <p class="hint-line err">! {remotesErr}</p>
+        {:else if availableRemotes.length === 0}
+          <p class="hint-line">// nenhum remote — crie um em [ manage ]</p>
+        {/if}
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="dest-path">path no remote (bucket/prefix)</label>
+        <div class="field-row">
+          <input
+            id="dest-path"
+            type="text"
+            class="field-input"
+            bind:value={destDraft}
+            placeholder="meu-bucket/save-sync"
+            disabled={!emu.enabled}
+          />
+        </div>
+        <p class="hint-line">// será gravado em {destRemoteDraft || "<remote>"}:{destDraft || "<path>"}/{emu.id}/</p>
+      </div>
+    {:else}
+      <div class="field">
+        <label class="field-label" for="dest-path">destination / mirror dir</label>
+        <div class="field-row">
+          <input
+            id="dest-path"
+            type="text"
+            class="field-input"
+            bind:value={destDraft}
+            placeholder="C:\path\to\backup"
+            disabled={!emu.enabled}
+          />
+          <button class="btn btn-thin" onclick={() => pickFolder("dest")} disabled={!emu.enabled}>
+            [ browse ]
+          </button>
+        </div>
+      </div>
+    {/if}
 
     <div class="field-actions">
       <button
@@ -469,6 +650,126 @@
         {emu.proc_watching ? "// monitoring — syncs when process exits" : "// idle"}
       </span>
     </div>
+  </section>
+
+  <section class="card">
+    <header class="card-head">
+      <span class="card-tag">[ history ]</span>
+      <span class="card-meta">snapshot policy</span>
+    </header>
+
+    {#if !historyDraft}
+      <p class="hint-line">// loading…</p>
+    {:else}
+      <div class="hist-row">
+        <span class="field-label">backup</span>
+        <div class="kind-toggle">
+          <button
+            type="button"
+            class="kind-opt"
+            class:active={historyDraft.enabled}
+            onclick={() => (historyDraft!.enabled = true)}
+          >
+            [ on ]
+          </button>
+          <button
+            type="button"
+            class="kind-opt"
+            class:active={!historyDraft.enabled}
+            onclick={() => (historyDraft!.enabled = false)}
+          >
+            [ off ]
+          </button>
+        </div>
+      </div>
+
+      <div class="hist-row">
+        <span class="field-label">modes</span>
+        <div class="check-stack">
+          <label class="check-row" class:disabled={!allowsIncremental || !historyDraft.enabled}>
+            <input
+              type="checkbox"
+              bind:checked={historyDraft.incremental_enabled}
+              disabled={!allowsIncremental || !historyDraft.enabled || lockOff("incremental")}
+            />
+            <span class="check-label">[ incremental ]</span>
+            <span class="check-hint">só arquivos sobrescritos vão pra delta/</span>
+          </label>
+          <label class="check-row" class:disabled={!historyDraft.enabled}>
+            <input
+              type="checkbox"
+              bind:checked={historyDraft.full_enabled}
+              disabled={!historyDraft.enabled || lockOff("full")}
+            />
+            <span class="check-label">[ full ]</span>
+            <span class="check-hint">estado completo copiado pra full/ antes de cada sync</span>
+          </label>
+        </div>
+      </div>
+
+      {#if !allowsIncremental}
+        <p class="hint-line">// {emu.id} usa arquivo binário como unidade — incremental degeneraria em full, então só full disponível</p>
+      {:else if historyDraft.incremental_enabled && historyDraft.full_enabled}
+        <p class="hint-line">// ambos ligados: cada sync produz .history/&lt;ts&gt;/full/ + .history/&lt;ts&gt;/delta/ (storage 2x)</p>
+      {:else if historyDraft.incremental_enabled}
+        <p class="hint-line">// incremental: barato em storage, fácil reverter um save específico</p>
+      {:else if historyDraft.full_enabled}
+        <p class="hint-line">// full: pesado em storage, mas cada snapshot é estado completo</p>
+      {/if}
+      {#if historyInvalid()}
+        <p class="hint-line err">! selecione pelo menos um modo enquanto history estiver ativo</p>
+      {/if}
+
+      <div class="field-grid">
+        <div class="field">
+          <label class="field-label" for="ret-days">retention (days)</label>
+          <input
+            id="ret-days"
+            type="number"
+            class="field-input"
+            min="0"
+            max="3650"
+            bind:value={historyDraft.retention_days}
+            disabled={!historyDraft.enabled}
+          />
+        </div>
+        <div class="field">
+          <label class="field-label" for="ret-mb">retention (max MB)</label>
+          <input
+            id="ret-mb"
+            type="number"
+            class="field-input"
+            min="0"
+            bind:value={historyDraft.retention_max_mb}
+            disabled={!historyDraft.enabled}
+          />
+        </div>
+      </div>
+
+      <div class="meta-row">
+        <span class="meta-key">bisync state</span>
+        <span class="meta-val" class:dim={!historyDraft.bisync_initialized}>
+          {historyDraft.bisync_initialized ? "initialized" : "// resync on next run"}
+        </span>
+      </div>
+
+      {#if historyErr}
+        <div class="meta-row error">
+          <span class="meta-key">last_error</span>
+          <span class="meta-val err">{historyErr}</span>
+        </div>
+      {/if}
+
+      <div class="field-actions">
+        <button
+          class="btn"
+          onclick={saveHistory}
+          disabled={savingHistory || !historyDirty() || historyInvalid()}
+        >
+          {savingHistory ? "saving..." : historyDirty() ? "[ commit history ]" : "[ saved ]"}
+        </button>
+      </div>
+    {/if}
   </section>
 
   {#if emu.id === "eden"}
@@ -925,5 +1226,137 @@
     font-size: 0.74rem;
     text-align: right;
     word-break: break-word;
+  }
+
+  .kind-toggle {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--border-strong);
+    width: fit-content;
+  }
+
+  .kind-opt {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 0.74rem;
+    padding: 0.4rem 0.9rem;
+    cursor: pointer;
+    letter-spacing: 0.05em;
+    transition: all 0.14s;
+  }
+
+  .kind-opt + .kind-opt {
+    border-left: 1px solid var(--border-strong);
+  }
+
+  .kind-opt:hover:not(:disabled):not(.active) {
+    color: var(--text-bright);
+    background: var(--hover-tint);
+  }
+
+  .kind-opt.active {
+    color: var(--accent);
+    background: var(--bg-hint);
+  }
+
+  .kind-opt:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .hint-line {
+    margin: 0.3rem 0 0;
+    font-size: 0.69rem;
+    color: var(--text-faint);
+    font-style: italic;
+    letter-spacing: 0.04em;
+    word-break: break-word;
+  }
+
+  .hint-line.err {
+    color: var(--error-text, #e05c5c);
+    font-style: normal;
+  }
+
+  .hist-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.8rem;
+    margin-bottom: 0.6rem;
+    flex-wrap: wrap;
+  }
+
+  .hist-row .field-label {
+    margin: 0;
+    min-width: 80px;
+    padding-top: 0.3rem;
+  }
+
+  .check-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .check-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    cursor: pointer;
+    color: var(--text-bright);
+    font-size: 0.78rem;
+    letter-spacing: 0.04em;
+    flex-wrap: wrap;
+  }
+
+  .check-row.disabled {
+    color: var(--text-faint);
+    cursor: not-allowed;
+  }
+
+  .check-row input[type="checkbox"] {
+    accent-color: var(--accent);
+    width: 1rem;
+    height: 1rem;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .check-row input[type="checkbox"]:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  .check-label {
+    font-family: "Major Mono Display", monospace;
+    color: var(--accent);
+    text-transform: lowercase;
+  }
+
+  .check-row.disabled .check-label {
+    color: var(--text-faint);
+  }
+
+  .check-hint {
+    color: var(--text-muted);
+    font-size: 0.69rem;
+    font-style: italic;
+  }
+
+  .field-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.7rem;
+    margin-top: 0.6rem;
+  }
+
+  @media (max-width: 540px) {
+    .field-grid {
+      grid-template-columns: 1fr;
+    }
   }
 </style>

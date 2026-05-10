@@ -3,6 +3,8 @@ use std::path::Path;
 use chrono::{DateTime, Local};
 use serde::Serialize;
 
+use crate::backend::Backend;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SaveEntry {
     pub raw_id: String,
@@ -238,43 +240,41 @@ pub fn delete_save(emulator_id: &str, source_path: &str, raw_id: &str) -> Result
     }
 }
 
-pub fn sync_one(emulator_id: &str, source: &str, dest: &str, raw_id: &str) -> Result<(), String> {
-    let dest_root = Path::new(dest).join(emulator_id);
-    std::fs::create_dir_all(&dest_root).map_err(|e| e.to_string())?;
-    let opts = fs_extra::dir::CopyOptions { overwrite: true, copy_inside: false, ..Default::default() };
+pub fn sync_one(
+    emulator_id: &str,
+    source: &str,
+    backend: &Backend,
+    raw_id: &str,
+) -> Result<(), String> {
+    backend.ensure_dir()?;
     match emulator_id {
         "eden" => {
             let base_src = eden_user_saves_base(Path::new(source));
-            let base_dst = eden_user_saves_base(&dest_root);
             for user in std::fs::read_dir(&base_src).map_err(|e| e.to_string())?.flatten() {
                 let from = user.path().join(raw_id);
                 if from.exists() {
-                    let to = base_dst.join(user.file_name());
-                    std::fs::create_dir_all(&to).map_err(|e| e.to_string())?;
-                    return fs_extra::dir::copy(&from, &to, &opts)
-                        .map(|_| ()).map_err(|e| e.to_string());
+                    let uuid = user.file_name().to_string_lossy().into_owned();
+                    let sub = format!("user/save/0000000000000000/{uuid}/{raw_id}");
+                    return backend.child(&sub).copy_dir_contents(&from);
                 }
             }
             Err(format!("save not found: {raw_id}"))
         }
         "rpcs3" => {
             let home_src = Path::new(source).join("home");
-            let home_dst = dest_root.join("home");
             for user in std::fs::read_dir(&home_src).map_err(|e| e.to_string())?.flatten() {
                 let from = user.path().join("savedata").join(raw_id);
                 if from.exists() {
-                    let to = home_dst.join(user.file_name()).join("savedata");
-                    std::fs::create_dir_all(&to).map_err(|e| e.to_string())?;
-                    return fs_extra::dir::copy(&from, &to, &opts)
-                        .map(|_| ()).map_err(|e| e.to_string());
+                    let uname = user.file_name().to_string_lossy().into_owned();
+                    let sub = format!("home/{uname}/savedata/{raw_id}");
+                    return backend.child(&sub).copy_dir_contents(&from);
                 }
             }
             Err(format!("save not found: {raw_id}"))
         }
         "pcsx2" => {
             let from = Path::new(source).join(raw_id);
-            let to   = dest_root.join(raw_id);
-            std::fs::copy(&from, &to).map(|_| ()).map_err(|e| e.to_string())
+            backend.copy_file(&from)
         }
         _ => Err("emulator not supported".into()),
     }
