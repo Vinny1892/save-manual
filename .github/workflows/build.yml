@@ -34,6 +34,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Short SHA (7 chars) → vai pro nome do artifact pra distinguir
+      # entre runs. Sem isso, downloads de runs diferentes têm o mesmo
+      # nome e sobrescrevem na pasta local.
+      - name: short sha
+        id: sha
+        shell: bash
+        run: echo "short=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -132,6 +140,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: save-sync-${{ matrix.label }}
+          name: save-sync-${{ matrix.label }}-${{ steps.sha.outputs.short }}
           path: dist/*
           if-no-files-found: warn
