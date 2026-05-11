@@ -218,6 +218,127 @@ pub fn test_remote(name: &str, path: &str) -> Result<(), String> {
     .map(|_| ())
 }
 
+/// One entry returned by `operations/list`. Field names follow rclone's
+/// JSON casing so serde can map straight from the RPC response.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ListEntry {
+    #[serde(rename = "Path")]
+    pub path: String,
+    #[serde(rename = "Name")]
+    pub name: String,
+    #[serde(rename = "Size", default)]
+    pub size: i64,
+    #[serde(rename = "ModTime", default)]
+    pub mod_time: String,
+    #[serde(rename = "IsDir", default)]
+    pub is_dir: bool,
+}
+
+/// Recursive listing of `<fs>:<path>`. Returns an empty Vec if the path
+/// doesn't exist (cloud prefixes spring into being on first write).
+///
+/// File `Path` fields are relative to the listed root, e.g. listing
+/// `.history/eden/` returns entries like `2026-05-09T.../full/Mcd001.ps2`.
+pub fn list_recursive(fs: &str, path: &str) -> Result<Vec<ListEntry>, String> {
+    let res = rpc_json(
+        "operations/list",
+        serde_json::json!({
+            "fs": fs,
+            "remote": path,
+            "opt": { "recurse": true },
+        }),
+    );
+    let v = match res {
+        Ok(v) => v,
+        Err(e) => {
+            let msg = e.to_lowercase();
+            if msg.contains("not found") || msg.contains("doesn't exist") {
+                return Ok(Vec::new());
+            }
+            return Err(e);
+        }
+    };
+    let arr = v
+        .get("list")
+        .and_then(|l| l.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        match serde_json::from_value::<ListEntry>(item) {
+            Ok(e) => out.push(e),
+            Err(_) => {} // skip malformed entries — robustness over strictness
+        }
+    }
+    Ok(out)
+}
+
+/// Splits a full rclone fs string into the (backend_prefix, path) pair
+/// that `operations/copyfile` and similar callers need. Handles three cases:
+///   - "remote:path/..."  → ("remote:", "path/...")
+///   - "C:\..." / "C:/.." → ("C:\...", "") (Windows local path, never split)
+///   - "/abs/path"        → ("/abs/path", "") (POSIX local path)
+pub fn split_root(full: &str) -> (String, String) {
+    let bytes = full.as_bytes();
+    let is_win_local = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'/' || bytes[2] == b'\\');
+
+    if !is_win_local {
+        if let Some(colon_pos) = full.find(':') {
+            let (remote, rest) = full.split_at(colon_pos + 1);
+            return (remote.to_string(), rest.to_string());
+        }
+    }
+    (full.to_string(), String::new())
+}
+
+/// Stat a path on any backend. Returns None if it doesn't exist. Used to
+/// pick between full/ vs delta/ when reverting a save.
+pub fn stat(fs: &str, path: &str) -> Result<Option<ListEntry>, String> {
+    let res = rpc_json(
+        "operations/stat",
+        serde_json::json!({ "fs": fs, "remote": path }),
+    );
+    match res {
+        Ok(v) => match v.get("item") {
+            Some(item) if !item.is_null() => serde_json::from_value::<ListEntry>(item.clone())
+                .map(Some)
+                .map_err(|e| e.to_string()),
+            _ => Ok(None),
+        },
+        Err(e) => {
+            let msg = e.to_lowercase();
+            if msg.contains("not found") || msg.contains("doesn't exist") {
+                Ok(None)
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Stat the path at the given full fs string by splitting it internally.
+/// Returns Some if the path exists (file OR directory), None otherwise.
+pub fn stat_path(full: &str) -> Result<Option<ListEntry>, String> {
+    let (fs, remote) = split_root(full);
+    stat(&fs, &remote)
+}
+
+/// Copy from one full fs string to another. Picks `operations/copyfile`
+/// when src is a file, `sync/copy` when it's a directory. Caller must
+/// know which (or accept the round-trip cost of a stat first).
+pub fn copy_path(src: &str, dst: &str, is_file: bool) -> Result<(), String> {
+    if is_file {
+        let (src_fs, src_remote) = split_root(src);
+        let (dst_fs, dst_remote) = split_root(dst);
+        copyfile(&src_fs, &src_remote, &dst_fs, &dst_remote)
+    } else {
+        copy_fs(src, dst)
+    }
+}
+
 /// Returns true if there is at least one entry at the given fs/path.
 /// Treats "directory not found" as empty (cloud-side prefixes don't exist
 /// until something is written into them).
@@ -312,4 +433,51 @@ pub fn bisync(opts: &BisyncOpts) -> Result<serde_json::Value, String> {
         input["backupdir2"] = bd.into();
     }
     rpc_json("sync/bisync", input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_root_rclone_with_path() {
+        let (fs, path) = split_root("s3:bucket/saves/.history/eden");
+        assert_eq!(fs, "s3:");
+        assert_eq!(path, "bucket/saves/.history/eden");
+    }
+
+    #[test]
+    fn split_root_rclone_bare() {
+        // "remote:" with no path — fs is the whole thing, path is empty.
+        let (fs, path) = split_root("s3:");
+        assert_eq!(fs, "s3:");
+        assert_eq!(path, "");
+    }
+
+    #[test]
+    fn split_root_windows_drive_letter_stays_intact() {
+        // "C:\foo" must NOT split at the drive-letter colon — the path is
+        // entirely local. Same for forward-slash flavor "C:/foo".
+        let (fs, path) = split_root("C:\\Users\\vini\\backup");
+        assert_eq!(fs, "C:\\Users\\vini\\backup");
+        assert_eq!(path, "");
+
+        let (fs, path) = split_root("D:/backup/saves");
+        assert_eq!(fs, "D:/backup/saves");
+        assert_eq!(path, "");
+    }
+
+    #[test]
+    fn split_root_posix_absolute_path() {
+        let (fs, path) = split_root("/home/vini/backup");
+        assert_eq!(fs, "/home/vini/backup");
+        assert_eq!(path, "");
+    }
+
+    #[test]
+    fn split_root_lowercase_drive_letter() {
+        // Lowercase drive letters are valid on Windows.
+        let (fs, _) = split_root("c:/backup");
+        assert_eq!(fs, "c:/backup");
+    }
 }

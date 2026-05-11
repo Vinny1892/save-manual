@@ -209,6 +209,26 @@ pub fn get_save(emulator_id: &str, source_path: &str, raw_id: &str) -> Option<Sa
     list_saves(emulator_id, source_path).into_iter().find(|e| e.raw_id == raw_id)
 }
 
+/// POSIX-style sub_path of the save relative to `source_path`. This is what
+/// gets concatenated to `<live_root>` or `<.history>/<ts>/<mode>` to find
+/// the same save under the backend layout.
+///
+/// Examples:
+///   eden  + "0100ABCDE..."  → "user/save/0000000000000000/<uuid>/0100ABCDE..."
+///   rpcs3 + "BLUS12345_..." → "home/00000001/savedata/BLUS12345_..."
+///   pcsx2 + "Mcd001.ps2"    → "Mcd001.ps2"
+pub fn save_sub_path(emulator_id: &str, source_path: &str, raw_id: &str) -> Option<String> {
+    let full = save_fs_path(emulator_id, source_path, raw_id)?;
+    let src = Path::new(source_path);
+    let rel = full.strip_prefix(src).ok()?;
+    let s = rel.to_str()?.replace('\\', "/");
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
 pub fn save_fs_path(emulator_id: &str, source_path: &str, raw_id: &str) -> Option<std::path::PathBuf> {
     let root = Path::new(source_path);
     let p = match emulator_id {

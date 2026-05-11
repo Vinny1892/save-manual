@@ -320,8 +320,12 @@ gatilho do local (sync now / watcher / proc-watch).
   roadmap.
 - OAuth (Drive, Dropbox) ainda não implementado — só remotes que aceitam
   credenciais estáticas funcionam por enquanto.
-- Revert pela UI ainda não existe (fase 2). Por enquanto pra reverter você
-  copia manualmente arquivo de `.history/<emu>/<ts>/<sub>` pra o live.
+- Revert pela UI: card `[ history ]` no save detail lista versões em
+  ordem reversa cronológica com badges `[ full ]` / `[ delta ]` e tamanho.
+  `[ revert ]` copia pro live E pro source local em paralelo, depois
+  invalida `bisync_initialized` (próximo sync re-baselina com `--resync`
+  pra evitar conflito artificial). Confirmação inline antes de
+  sobrescrever — sem dialog modal por enquanto.
 
 ### Tema
 
@@ -346,7 +350,7 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 | PS2 memcard | `list_memcard_saves` |
 | Covers | `fetch_cover_url(title, kind?)` |
 | Rclone | `rclone_version`, `rclone_list_remotes`, `rclone_create_s3_remote`, `rclone_delete_remote`, `rclone_get_remote`, `rclone_test_remote` |
-| History | `get_history_settings`, `set_history_settings`, `supports_incremental_history` |
+| History | `get_history_settings`, `set_history_settings`, `supports_incremental_history`, `list_save_history`, `revert_save` |
 
 ### Eventos (do backend pro frontend)
 
@@ -382,6 +386,10 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 
 12. **`.history/<ts>/{full,delta}/` subdirs**: quando os dois modos estão on no mesmo run, eles compartilham `<ts>` mas precisam de paths separados. Sem subdir, snapshot full sobrescreveria o que `--backupdir2` salvou. Teste unitário `snapshot_full_and_delta_never_collide` trava essa invariante.
 
+13. **Revert invalida `bisync_initialized`**: depois de copiar uma versão antiga pra live + source, os listing files do rclone bisync (em `~/.cache/rclone/bisync/`) ainda refletem o estado pré-revert. Bisync sem `--resync` veria os dois lados "regredidos" e marcaria como conflito de modificação dupla. `db::mark_bisync_needs_resync()` zera o flag pra que o próximo sync re-baselinе.
+
+14. **Save detection inclui prefix + boundary slash**: `group_history_entries` filtra entradas do listing recursivo por `sub_path`. Aceita match exato OU prefix seguido de `/` — sem o check de slash, "Mcd001.ps2" também casaria com "Mcd001.ps2.bak" e "Mcd0011.ps2". Teste `group_history_handles_exact_file_match_pcsx2_style` cobre.
+
 ---
 
 ## Roadmap
@@ -399,8 +407,8 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 - [x] Bidirectional sync via `rclone bisync` (com auto-resync detection)
 - [x] History modes independentes (incremental via `--backupdir2`, full via pre-snapshot, qualquer combinação)
 - [x] Settings por emulador (enabled, incremental_enabled, full_enabled, retention_days, retention_max_mb)
-- [x] Testes unitários (45 testes em backend/db/lib — `cargo test --lib`)
-- [ ] **Fase 2**: UI de revert (list_save_history + revert_to + card no save detail)
+- [x] **Fase 2**: UI de revert (`list_save_history` + `revert_save` + card `[ history ]` no save detail)
+- [x] Testes unitários (57 testes em backend/db/lib/rclone — `cargo test --lib`)
 - [ ] **Fase 3**: UI de conflict resolution (bisync `--conflict-resolve none` + modal)
 - [ ] **Fase 4**: Prune automático (retention enforcement via `purge` no fim de cada sync)
 - [ ] Duplicação de memcard PCSX2 em vez de overwrite quando há conflito
@@ -472,13 +480,14 @@ cd src-tauri
 cargo test --lib
 ```
 
-Cobertura atual (45 testes):
+Cobertura atual (57 testes):
 
 | Módulo | Cobertura |
 |---|---|
 | `backend` | path joining (POSIX vs Windows), live/snapshot fs strings (run/full/delta), history-root-é-sibling invariant, full-vs-delta-never-collide invariant, child(), for_emulator() validation matrix |
 | `db` | migrations v3/v4/v5 (inclui translação de mode legado pros booleanos), supports_incremental classification, history settings round-trip com modos independentes, pcsx2 coerção de incremental, at-least-one-mode validation (rejeita ambos off quando enabled, aceita quando disabled), defaults round-trip via set_history (cross-check), bisync_initialized lifecycle |
-| `lib` | sync_subtrees per emulator, validate_config matrix (local/rclone, missing fields) |
+| `rclone` | split_root pra rclone vs Windows-local (drive letter intacto) vs POSIX absolute vs bare "remote:" |
+| `lib` | sync_subtrees per emulator, validate_config matrix (local/rclone, missing fields), group_history_entries (bucket por ts, combina full+delta no mesmo run, filtra por sub_path prefix com boundary slash, soma só files não dirs, ignora modos desconhecidos) |
 
 Tests rodam offline — não exercitam o librclone real (FFI inicializa só em
 runtime). Integração end-to-end com S3/MinIO ainda é manual.

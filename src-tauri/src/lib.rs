@@ -628,6 +628,167 @@ async fn supports_incremental_history(id: String) -> Result<bool, String> {
     Ok(db::supports_incremental_history(&id))
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SaveHistoryEntry {
+    pub timestamp: String,
+    /// Whether this run produced a `full/` snapshot containing the save.
+    pub has_full: bool,
+    /// Whether this run produced a `delta/` entry for the save (i.e. the
+    /// save was overwritten/deleted on that sync and rclone moved the
+    /// previous version into --backupdir2).
+    pub has_delta: bool,
+    /// Sum of sizes of all files belonging to this save at this timestamp.
+    /// Useful for the UI to show storage cost per version.
+    pub size_bytes: u64,
+}
+
+/// Pure aggregation pass — splits each history-relative entry path into
+/// `<ts>/<mode>/<path_in_mode>`, filters for entries matching `sub_path`
+/// (exact, or a child below it — trailing-slash check guards against
+/// `Mcd001.ps2` vs `Mcd001b.ps2` style false prefixes), and accumulates
+/// per-timestamp size + mode flags. Extracted from `list_save_history` so
+/// tests can exercise it without librclone.
+fn group_history_entries(
+    entries: &[rclone::ListEntry],
+    sub_path: &str,
+) -> Vec<SaveHistoryEntry> {
+    use std::collections::BTreeMap;
+    let mut by_ts: BTreeMap<String, SaveHistoryEntry> = BTreeMap::new();
+
+    for entry in entries {
+        let parts: Vec<&str> = entry.path.splitn(3, '/').collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let ts = parts[0];
+        let mode = parts[1];
+        let path_in_mode = parts[2];
+
+        if mode != "full" && mode != "delta" {
+            continue;
+        }
+
+        if path_in_mode != sub_path {
+            if !path_in_mode.starts_with(sub_path) {
+                continue;
+            }
+            let after = &path_in_mode[sub_path.len()..];
+            if !after.starts_with('/') {
+                continue;
+            }
+        }
+
+        let bucket = by_ts
+            .entry(ts.to_string())
+            .or_insert_with(|| SaveHistoryEntry {
+                timestamp: ts.to_string(),
+                has_full: false,
+                has_delta: false,
+                size_bytes: 0,
+            });
+        if mode == "full" {
+            bucket.has_full = true;
+        }
+        if mode == "delta" {
+            bucket.has_delta = true;
+        }
+        if !entry.is_dir {
+            bucket.size_bytes += entry.size.max(0) as u64;
+        }
+    }
+
+    let mut out: Vec<SaveHistoryEntry> = by_ts.into_values().collect();
+    // Reverse chronological — newest first matches the "1, 2, 3 days ago"
+    // intuition of revert-to-N-days.
+    out.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    out
+}
+
+#[tauri::command]
+async fn list_save_history(
+    id: String,
+    raw_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<SaveHistoryEntry>, String> {
+    let (source, emu) = {
+        let s = state.lock().await;
+        let emu = db::get(&s.conn, &id)?;
+        validate_config(&emu)?;
+        (emu.source_path.clone(), emu)
+    };
+
+    let sub_path = saves::save_sub_path(&id, &source, &raw_id)
+        .ok_or_else(|| format!("save não encontrado: {raw_id}"))?;
+    let backend = Backend::for_emulator(&emu)?;
+
+    // Single recursive listing of the whole .history/<emu_id>/ tree.
+    // For a 30-day retention with daily syncs and ~20 saves, this is a few
+    // thousand entries — cheap to walk client-side and avoids N round-trips.
+    let history_root = backend.history_root_fs();
+    let (history_fs, history_remote) = rclone::split_root(&history_root);
+    let entries = rclone::list_recursive(&history_fs, &history_remote)?;
+
+    Ok(group_history_entries(&entries, &sub_path))
+}
+
+#[tauri::command]
+async fn revert_save(
+    id: String,
+    raw_id: String,
+    timestamp: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let (source, emu) = {
+        let s = state.lock().await;
+        let emu = db::get(&s.conn, &id)?;
+        validate_config(&emu)?;
+        (emu.source_path.clone(), emu)
+    };
+
+    let sub_path = saves::save_sub_path(&id, &source, &raw_id)
+        .ok_or_else(|| format!("save não encontrado: {raw_id}"))?;
+    let backend = Backend::for_emulator(&emu)?;
+
+    // File-based emus (pcsx2) treat the save as a single file — picks
+    // operations/copyfile downstream. Dir-based use sync/copy.
+    let is_file = !db::supports_incremental_history(&emu.id);
+
+    // Locate the version in history. Prefer full/ (always complete state)
+    // over delta/ (only the files that were overwritten that run).
+    let full_src = format!("{}/{}", backend.snapshot_full_fs(&timestamp), sub_path);
+    let delta_src = backend.snapshot_delta_fs_at(&timestamp, &sub_path);
+
+    let history_src = if rclone::stat_path(&full_src)?.is_some() {
+        full_src
+    } else if rclone::stat_path(&delta_src)?.is_some() {
+        delta_src
+    } else {
+        return Err(format!("save não encontrado em .history/{timestamp}"));
+    };
+
+    // Two destinations to keep consistent: the cloud/local live copy and
+    // the local source path where the emulator actually reads from.
+    // rclone accepts forward slashes on Windows, so we just concat — no
+    // OS-separator dance needed.
+    let live_target = format!("{}/{}", backend.live_fs(), sub_path);
+    let source_target = format!("{}/{}", source.trim_end_matches(['/', '\\']), sub_path);
+
+    rclone::copy_path(&history_src, &live_target, is_file)?;
+    rclone::copy_path(&history_src, &source_target, is_file)?;
+
+    // Invalidate bisync state — the next sync will --resync from this
+    // post-revert baseline. Without this, bisync's cached listings would
+    // see both sides "regressed" and surface false conflicts.
+    {
+        let s = state.lock().await;
+        let _ = db::mark_bisync_needs_resync(&s.conn, &emu.id);
+    }
+
+    emit_changed(&app, &state, &id).await;
+    Ok(())
+}
+
 #[tauri::command]
 async fn list_memcard_saves(
     id: String,
@@ -1086,6 +1247,8 @@ pub fn run() {
             get_history_settings,
             set_history_settings,
             supports_incremental_history,
+            list_save_history,
+            revert_save,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1179,5 +1342,107 @@ mod tests {
         // value from a previous rclone config must not fail validation.
         let e = emu("eden", "/src", "local", "s3", "/dest");
         assert!(validate_config(&e).is_ok());
+    }
+
+    // ─── group_history_entries ────────────────────────────────────────────
+
+    fn entry(path: &str, size: i64, is_dir: bool) -> rclone::ListEntry {
+        rclone::ListEntry {
+            path: path.into(),
+            name: path.rsplit('/').next().unwrap_or("").into(),
+            size,
+            mod_time: String::new(),
+            is_dir,
+        }
+    }
+
+    #[test]
+    fn group_history_buckets_by_timestamp() {
+        let entries = vec![
+            entry("2026-05-08T19-45-12Z/full/Mcd001.ps2", 8_388_608, false),
+            entry("2026-05-09T14-30-00Z/full/Mcd001.ps2", 8_388_608, false),
+        ];
+        let out = group_history_entries(&entries, "Mcd001.ps2");
+        assert_eq!(out.len(), 2);
+        // Reverse chronological — newest first.
+        assert_eq!(out[0].timestamp, "2026-05-09T14-30-00Z");
+        assert_eq!(out[1].timestamp, "2026-05-08T19-45-12Z");
+        assert!(out[0].has_full);
+        assert!(!out[0].has_delta);
+    }
+
+    #[test]
+    fn group_history_combines_full_and_delta_in_same_run() {
+        // When both modes are on for a single sync, the timestamp dir has
+        // both `full/` and `delta/` subtrees — should fold into one entry.
+        let entries = vec![
+            entry("2026-05-09T14-30-00Z/full/user/save/uuid/titleA/file", 100, false),
+            entry("2026-05-09T14-30-00Z/delta/user/save/uuid/titleA/file", 50, false),
+        ];
+        let out = group_history_entries(&entries, "user/save/uuid/titleA");
+        assert_eq!(out.len(), 1);
+        assert!(out[0].has_full);
+        assert!(out[0].has_delta);
+        assert_eq!(out[0].size_bytes, 150);
+    }
+
+    #[test]
+    fn group_history_filters_by_sub_path_prefix() {
+        // Listings include sibling saves' entries — must not leak into our
+        // result. titleA's listing should ignore titleB and titleAA.
+        let entries = vec![
+            entry("2026-05-09T14-30-00Z/full/user/save/uuid/titleA/file1", 100, false),
+            entry("2026-05-09T14-30-00Z/full/user/save/uuid/titleB/file1", 200, false),
+            entry("2026-05-09T14-30-00Z/full/user/save/uuid/titleAA/file1", 400, false),
+        ];
+        let out = group_history_entries(&entries, "user/save/uuid/titleA");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].size_bytes, 100); // titleB + titleAA excluded
+    }
+
+    #[test]
+    fn group_history_handles_exact_file_match_pcsx2_style() {
+        // pcsx2's sub_path is just "Mcd001.ps2" — the entry path equals it
+        // (no trailing slash). Earlier prefix check would mis-match
+        // "Mcd001.ps2.bak" if not careful. Trailing-slash check guards.
+        let entries = vec![
+            entry("2026-05-09T14-30-00Z/full/Mcd001.ps2", 8_388_608, false),
+            entry("2026-05-09T14-30-00Z/full/Mcd001.ps2.bak", 8_388_608, false),
+            entry("2026-05-09T14-30-00Z/full/Mcd0011.ps2", 8_388_608, false),
+        ];
+        let out = group_history_entries(&entries, "Mcd001.ps2");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].size_bytes, 8_388_608);
+    }
+
+    #[test]
+    fn group_history_sums_sizes_of_files_only() {
+        // Directory entries (`IsDir: true`) shouldn't contribute to size.
+        let entries = vec![
+            entry("2026-05-09T14-30-00Z/full/user/save/uuid/titleA", 0, true),
+            entry("2026-05-09T14-30-00Z/full/user/save/uuid/titleA/file1", 100, false),
+            entry("2026-05-09T14-30-00Z/full/user/save/uuid/titleA/file2", 50, false),
+        ];
+        let out = group_history_entries(&entries, "user/save/uuid/titleA");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].size_bytes, 150);
+    }
+
+    #[test]
+    fn group_history_empty_input_returns_empty() {
+        assert!(group_history_entries(&[], "anything").is_empty());
+    }
+
+    #[test]
+    fn group_history_ignores_unknown_mode_subdirs() {
+        // Future variant or stray data under .history/<ts>/<x>/ shouldn't
+        // accidentally count.
+        let entries = vec![
+            entry("2026-05-09T14-30-00Z/snapshot/Mcd001.ps2", 100, false),
+            entry("2026-05-09T14-30-00Z/full/Mcd001.ps2", 50, false),
+        ];
+        let out = group_history_entries(&entries, "Mcd001.ps2");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].size_bytes, 50);
     }
 }

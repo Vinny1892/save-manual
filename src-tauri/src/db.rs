@@ -368,6 +368,19 @@ pub fn mark_bisync_initialized(conn: &Connection, emu_id: &str) -> Result<(), St
     Ok(())
 }
 
+/// Inverse of mark_bisync_initialized — forces a `--resync` on the next sync.
+/// Called after revert because the rclone bisync state files (in workdir)
+/// reflect pre-revert listings; running a normal bisync would see both
+/// sides "regressed" and may flag conflicts. `--resync` rebuilds baseline.
+pub fn mark_bisync_needs_resync(conn: &Connection, emu_id: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE history_settings SET bisync_initialized = 0 WHERE emulator_id = ?1",
+        params![emu_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn set_enabled(conn: &Connection, id: &str, enabled: bool) -> Result<(), String> {
     conn.execute(
         "UPDATE emulators SET enabled = ?1 WHERE id = ?2",

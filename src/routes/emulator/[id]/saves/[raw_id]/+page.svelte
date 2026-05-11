@@ -35,9 +35,24 @@
   let actionErr = $state("");
   let syncOk   = $state(false);
 
+  // history
+  interface HistoryVersion {
+    timestamp: string;
+    has_full: boolean;
+    has_delta: boolean;
+    size_bytes: number;
+  }
+  let history = $state<HistoryVersion[]>([]);
+  let historyLoading = $state(false);
+  let historyErr = $state("");
+  let revertingTs = $state<string | null>(null);
+  let confirmRevert = $state<string | null>(null);
+  let revertOk = $state<string | null>(null);
+
   $effect(() => {
     void rawId;
     loadEntry();
+    loadHistory();
   });
 
   // Propagate tint to <html> so app-wide chrome (title bar, scrollbar) can
@@ -131,6 +146,75 @@
 
   function initials(title: string): string {
     return title.split(" ").slice(0, 2).map(w => w[0]).join("").toUpperCase();
+  }
+
+  async function loadHistory() {
+    historyLoading = true;
+    historyErr = "";
+    history = [];
+    try {
+      history = await invoke<HistoryVersion[]>("list_save_history", { id: emuId, rawId });
+    } catch (e) {
+      historyErr = String(e);
+    } finally {
+      historyLoading = false;
+    }
+  }
+
+  async function revert(ts: string) {
+    revertingTs = ts;
+    historyErr = "";
+    try {
+      await invoke("revert_save", { id: emuId, rawId, timestamp: ts });
+      revertOk = ts;
+      setTimeout(() => (revertOk = null), 4000);
+      // Reload the entry (size/modified will reflect the reverted version)
+      // and history (the previous live state is now in a new pending snapshot
+      // once user re-syncs, but listing doesn't change instantly).
+      await loadEntry();
+    } catch (e) {
+      historyErr = String(e);
+    } finally {
+      revertingTs = null;
+      confirmRevert = null;
+    }
+  }
+
+  /// Converts `2026-05-09T14-30-00Z` (rclone-safe ISO with hyphens) into a
+  /// `Date` so we can use toLocaleString for display. The hyphens in time
+  /// position would break `new Date()` directly, so we patch them back to
+  /// colons before parsing.
+  function parseTs(ts: string): Date | null {
+    // "2026-05-09T14-30-00Z" → "2026-05-09T14:30:00Z"
+    const iso = ts.replace(
+      /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})Z$/,
+      "$1T$2:$3:$4Z"
+    );
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function fmtTs(ts: string): string {
+    const d = parseTs(ts);
+    if (!d) return ts;
+    return d.toLocaleString("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  function ageLabel(ts: string): string {
+    const d = parseTs(ts);
+    if (!d) return "";
+    const diffSec = (Date.now() - d.getTime()) / 1000;
+    const hours = diffSec / 3600;
+    const days = hours / 24;
+    if (days >= 1) return `${Math.round(days)}d atrás`;
+    if (hours >= 1) return `${Math.round(hours)}h atrás`;
+    return `${Math.max(1, Math.round(diffSec / 60))}min atrás`;
   }
 </script>
 
@@ -238,6 +322,61 @@
       </div>
     </div>
   </div>
+
+  <section class="history-card">
+    <header class="hist-head">
+      <span class="hist-tag">[ history ]</span>
+      <span class="hist-meta">
+        {#if historyLoading}
+          // loading…
+        {:else}
+          {history.length} {history.length === 1 ? "version" : "versions"}
+        {/if}
+      </span>
+      <button class="hist-refresh" onclick={loadHistory} disabled={historyLoading} aria-label="refresh">↻</button>
+    </header>
+
+    {#if historyErr}
+      <p class="hist-err">! {historyErr}</p>
+    {:else if !historyLoading && history.length === 0}
+      <p class="hist-empty">// nenhuma versão anterior — history só começa a popular depois do segundo sync</p>
+    {:else}
+      <ul class="hist-list">
+        {#each history as h (h.timestamp)}
+          <li class="hist-row" class:reverting={revertingTs === h.timestamp}>
+            <div class="hist-when">
+              <span class="hist-date">{fmtTs(h.timestamp)}</span>
+              <span class="hist-age">{ageLabel(h.timestamp)}</span>
+            </div>
+            <div class="hist-modes">
+              {#if h.has_full}<span class="badge full">[ full ]</span>{/if}
+              {#if h.has_delta}<span class="badge delta">[ delta ]</span>{/if}
+            </div>
+            <span class="hist-size">{fmtBytes(h.size_bytes)}</span>
+            <div class="hist-action">
+              {#if confirmRevert === h.timestamp}
+                <span class="confirm-label">! sobrescreve atual?</span>
+                <button class="action-btn danger" onclick={() => revert(h.timestamp)} disabled={revertingTs !== null}>
+                  {revertingTs === h.timestamp ? "…" : "[ confirm ]"}
+                </button>
+                <button class="action-btn" onclick={() => (confirmRevert = null)}>[ cancel ]</button>
+              {:else if revertOk === h.timestamp}
+                <span class="revert-ok">// reverted ✓</span>
+              {:else}
+                <button class="action-btn" onclick={() => (confirmRevert = h.timestamp)} disabled={revertingTs !== null || readOnly && !h.has_full}>
+                  [ revert ]
+                </button>
+              {/if}
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
+    {#if revertOk}
+      <p class="hist-hint">// na próxima sync o rclone vai re-baselinar (resync) — esperado, e não dura muito</p>
+    {/if}
+  </section>
 {/if}
 </div>
 
@@ -602,5 +741,178 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     flex-shrink: 0;
+  }
+
+  .history-card {
+    margin-top: 1.4rem;
+    border: 1px solid var(--border);
+    background: var(--bg-unit-1);
+    padding: 0.85rem 1rem;
+  }
+
+  .hist-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.6rem;
+    border-bottom: 1px dashed var(--border);
+    padding-bottom: 0.4rem;
+    margin-bottom: 0.7rem;
+  }
+
+  .hist-tag {
+    color: var(--accent);
+    font-size: 0.74rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .hist-meta {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-left: auto;
+  }
+
+  .hist-refresh {
+    background: transparent;
+    border: 1px dashed var(--border-strong);
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 0.85rem;
+    padding: 0.1rem 0.45rem;
+    cursor: pointer;
+    transition: all 0.14s;
+  }
+
+  .hist-refresh:hover:not(:disabled) {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .hist-refresh:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .hist-empty,
+  .hist-err {
+    margin: 0.3rem 0;
+    font-size: 0.76rem;
+    color: var(--text-muted);
+    font-style: italic;
+    letter-spacing: 0.04em;
+  }
+
+  .hist-err {
+    color: var(--error, #e05c5c);
+    font-style: normal;
+  }
+
+  .hist-hint {
+    margin: 0.7rem 0 0;
+    font-size: 0.69rem;
+    color: var(--text-faint);
+    font-style: italic;
+    letter-spacing: 0.04em;
+  }
+
+  .hist-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .hist-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto auto;
+    gap: 0.8rem;
+    align-items: center;
+    padding: 0.55rem 0;
+    border-bottom: 1px dotted var(--border);
+    font-size: 0.78rem;
+  }
+
+  .hist-row:last-child {
+    border-bottom: none;
+  }
+
+  .hist-row.reverting {
+    opacity: 0.55;
+  }
+
+  .hist-when {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .hist-date {
+    color: var(--text-bright);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .hist-age {
+    color: var(--text-faint);
+    font-size: 0.66rem;
+    font-style: italic;
+    letter-spacing: 0.04em;
+  }
+
+  .hist-modes {
+    display: flex;
+    gap: 0.35rem;
+  }
+
+  .badge {
+    font-size: 0.66rem;
+    letter-spacing: 0.05em;
+    padding: 0.15rem 0.35rem;
+    border: 1px solid var(--border-strong);
+    color: var(--text-muted);
+  }
+
+  .badge.full {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .badge.delta {
+    color: var(--text-soft);
+    border-color: var(--text-soft);
+  }
+
+  .hist-size {
+    color: var(--text-soft);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.73rem;
+  }
+
+  .hist-action {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+  }
+
+  .revert-ok {
+    color: var(--success, #5ec07a);
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+  }
+
+  @media (max-width: 600px) {
+    .hist-row {
+      grid-template-columns: 1fr auto;
+      grid-template-rows: auto auto;
+    }
+    .hist-modes,
+    .hist-size {
+      grid-column: 1;
+    }
+    .hist-action {
+      grid-row: 1 / 3;
+      grid-column: 2;
+    }
   }
 </style>
