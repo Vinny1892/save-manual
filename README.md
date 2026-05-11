@@ -355,6 +355,7 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 | Rclone | `rclone_version`, `rclone_list_remotes`, `rclone_create_s3_remote`, `rclone_delete_remote`, `rclone_get_remote`, `rclone_test_remote` |
 | History | `get_history_settings`, `set_history_settings`, `supports_incremental_history`, `list_save_history`, `revert_save` |
 | Conflicts | `list_conflicts`, `resolve_conflict` |
+| Retention | `prune_history_now` (auto-rodado no fim de cada sync) |
 
 ### Eventos (do backend pro frontend)
 
@@ -400,6 +401,12 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 
 17. **`keep_both` renomeia movendo o sufixo pra antes da extensão**: `Mcd001.ps2.conflict1` → `Mcd001-conflict1.ps2`. Mantém a extensão útil (`.ps2`) pra emulador identificar o tipo. Pra arquivos sem extensão, simplesmente apenda `-conflictN`. Helper `rename_keep_both_path` tem teste cobrindo paths com dots no diretório (`1.0.0/save.conflict1`) que não devem ser confundidos com extensão.
 
+18. **Prune roda como step-final do sync, best-effort**: depois do(s) bisync(s) subsequent, `prune_history` aplica retention. Falha do prune **não** falha o sync — o que importa é o sync ter copiado os dados; deletar snapshot antigo é gravy. Loga e segue. Botão `[ prune now ]` no card history dispara manualmente quando o usuário quer reagir a uma mudança de retention sem esperar próxima sync.
+
+19. **Duas regras de retention, age first depois size**: `retention_days` marca timestamps acima da idade pra remover, depois `retention_max_mb` mata os mais antigos sobreviventes até o total caber. Qualquer regra com valor `<= 0` está desabilitada. Lógica é pura em `pick_snapshots_to_prune`, com testes cobrindo cada combinação (só age, só size, ambos, ambos desabilitados, sob o cap, timestamps malformados). Timestamps que não parseiam (ex: pasta com nome estranho deixada por outro processo) **não** são marcados pra deleção — seguro por default.
+
+20. **Formato do timestamp tem hífens em vez de dois pontos**: `YYYY-MM-DDTHH-MM-SSZ`. Dois-pontos é caractere inválido pra nome de arquivo no Windows e cria atrito em ferramentas que escapam mal. `parse_snapshot_ts` reverte os hífens da parte HH-MM-SS pra dois-pontos antes de chamar o parser ISO8601 da chrono.
+
 ---
 
 ## Roadmap
@@ -419,8 +426,8 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 - [x] Settings por emulador (enabled, incremental_enabled, full_enabled, retention_days, retention_max_mb)
 - [x] **Fase 2**: UI de revert (`list_save_history` + `revert_save` + card `[ history ]` no save detail)
 - [x] **Fase 3**: Conflict resolution via `--conflict-loser num` (loser preservado como `.conflict1`, card `[ conflicts ]` no emulator detail com 3 ações: keep_current / use_conflict / keep_both)
-- [x] Testes unitários (69 testes em backend/db/lib/rclone — `cargo test --lib`)
-- [ ] **Fase 4**: Prune automático (retention enforcement via `purge` no fim de cada sync)
+- [x] **Fase 4**: Prune automático (retention_days + retention_max_mb enforced ao fim de cada sync; botão `[ prune now ]` manual disponível)
+- [x] Testes unitários (81 testes em backend/db/lib/rclone — `cargo test --lib`)
 - [ ] Duplicação de memcard PCSX2 em vez de overwrite quando há conflito
 - [ ] Async sync com progress (core/stats)
 - [ ] OAuth flow (Drive, Dropbox, OneDrive) via `config/create` + callback HTTP
@@ -498,6 +505,15 @@ emulator detail surfaceia esses pra resolução com 3 ações:
 Depois de qualquer resolução, próximo sync re-baseliza com `--resync`
 (mesmo motivo do revert: state files do bisync ficaram defasados).
 
+**History não está sendo limpa apesar de ter retention configurado**
+
+`prune_history` roda como step-final do sync. Se você nunca sincronizou
+depois de mudar `retention_days` ou `retention_max_mb`, nada apaga.
+Botão `[ prune now ]` no card `[ history ]` dispara manualmente.
+Lembre que retention `<= 0` desabilita a regra correspondente —
+`retention_days = 0` + `retention_max_mb = 0` significa "guarde tudo
+pra sempre".
+
 ## Testes
 
 ```bash
@@ -505,14 +521,14 @@ cd src-tauri
 cargo test --lib
 ```
 
-Cobertura atual (69 testes):
+Cobertura atual (81 testes):
 
 | Módulo | Cobertura |
 |---|---|
 | `backend` | path joining (POSIX vs Windows), live/snapshot fs strings (run/full/delta), history-root-é-sibling invariant, full-vs-delta-never-collide invariant, child(), for_emulator() validation matrix |
 | `db` | migrations v3/v4/v5 (inclui translação de mode legado pros booleanos), supports_incremental classification, history settings round-trip com modos independentes, pcsx2 coerção de incremental, at-least-one-mode validation (rejeita ambos off quando enabled, aceita quando disabled), defaults round-trip via set_history (cross-check), bisync_initialized lifecycle |
 | `rclone` | split_root pra rclone vs Windows-local (drive letter intacto) vs POSIX absolute vs bare "remote:" |
-| `lib` | sync_subtrees per emulator, validate_config matrix (local/rclone, missing fields), group_history_entries (bucket por ts, combina full+delta no mesmo run, filtra por sub_path prefix com boundary slash, soma só files não dirs, ignora modos desconhecidos), strip_conflict_marker (parse válido, rejeita orfãos sem original e sufixos não-numéricos), rename_keep_both_path (move marker pra antes da extensão, sem extensão apenda, dot em diretório não confunde), find_conflicts (pareia current+loser, multi-conflict chain `.conflict1+.conflict2`, ignora órfãos e dir entries) |
+| `lib` | sync_subtrees per emulator, validate_config matrix (local/rclone, missing fields), group_history_entries (bucket por ts, combina full+delta no mesmo run, filtra por sub_path prefix com boundary slash, soma só files não dirs, ignora modos desconhecidos), strip_conflict_marker (parse válido, rejeita orfãos sem original e sufixos não-numéricos), rename_keep_both_path (move marker pra antes da extensão, sem extensão apenda, dot em diretório não confunde), find_conflicts (pareia current+loser, multi-conflict chain `.conflict1+.conflict2`, ignora órfãos e dir entries), parse_snapshot_ts (valid + 4 rejeições de formato), pick_snapshots_to_prune (só age, só size com oldest-first, multi-drop, ambos combinados, ambos desabilitados, sob o cap, timestamps malformados) |
 
 Tests rodam offline — não exercitam o librclone real (FFI inicializa só em
 runtime). Integração end-to-end com S3/MinIO ainda é manual.

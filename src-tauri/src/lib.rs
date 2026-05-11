@@ -628,6 +628,22 @@ async fn supports_incremental_history(id: String) -> Result<bool, String> {
     Ok(db::supports_incremental_history(&id))
 }
 
+#[tauri::command]
+async fn prune_history_now(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<PruneSummary, String> {
+    let (emu, history) = {
+        let s = state.lock().await;
+        let emu = db::get(&s.conn, &id)?;
+        validate_config(&emu)?;
+        let history = db::get_history_settings(&s.conn, &id)?;
+        (emu, history)
+    };
+    let backend = Backend::for_emulator(&emu)?;
+    prune_history(&backend, &history)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SaveHistoryEntry {
     pub timestamp: String,
@@ -698,6 +714,167 @@ fn rename_keep_both_path(conflict_path: &str) -> String {
     } else {
         format!("{}-conflict{}", original, n)
     }
+}
+
+// ─── prune (retention enforcement) ──────────────────────────────────────
+//
+// After every successful sync we evaluate two rules against the per-emu
+// history dir. Both are user-configurable via `history_settings`:
+//
+//   retention_days   — anything older than N days gets purged
+//   retention_max_mb — if total still exceeds, oldest snapshots purged
+//                      until size fits under the cap
+//
+// `<= 0` disables either rule. Pruning is best-effort: failures don't
+// fail the sync (we already wrote new data, deleting old is gravy).
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PruneSummary {
+    pub deleted_count: usize,
+    pub freed_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct SnapshotInfo {
+    timestamp: String,
+    size_bytes: u64,
+}
+
+/// Parses our snapshot timestamp format (`YYYY-MM-DDTHH-MM-SSZ` — hyphens
+/// instead of colons in time so it's filesystem-safe on Windows). Returns
+/// None on any malformation.
+fn parse_snapshot_ts(ts: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::TimeZone;
+    let bytes = ts.as_bytes();
+    if bytes.len() != 20 || !ts.ends_with('Z') || bytes[10] != b'T' {
+        return None;
+    }
+    // Reassemble standard ISO8601 by swapping the hyphens at positions 13
+    // and 16 back to colons.
+    let iso = format!(
+        "{}T{}:{}:{}",
+        &ts[..10],
+        &ts[11..13],
+        &ts[14..16],
+        &ts[17..19],
+    );
+    chrono::NaiveDateTime::parse_from_str(&iso, "%Y-%m-%dT%H:%M:%S")
+        .ok()
+        .map(|nd| chrono::Utc.from_utc_datetime(&nd))
+}
+
+/// Pure decision: which snapshot timestamps to delete given retention rules.
+/// Returns empty Vec when nothing should go (or both rules disabled).
+fn pick_snapshots_to_prune(
+    snapshots: &[SnapshotInfo],
+    retention_days: i64,
+    retention_max_mb: i64,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let mut to_delete: BTreeSet<String> = BTreeSet::new();
+
+    // Rule 1: age cap. retention_days <= 0 means "no age limit".
+    if retention_days > 0 {
+        let cutoff = now - chrono::Duration::days(retention_days);
+        for s in snapshots {
+            if let Some(t) = parse_snapshot_ts(&s.timestamp) {
+                if t < cutoff {
+                    to_delete.insert(s.timestamp.clone());
+                }
+            }
+        }
+    }
+
+    // Rule 2: size cap. retention_max_mb <= 0 means "no size limit".
+    if retention_max_mb > 0 {
+        let max_bytes = (retention_max_mb as u64).saturating_mul(1024 * 1024);
+        // Survivors of rule 1, oldest first.
+        let mut remaining: Vec<&SnapshotInfo> = snapshots
+            .iter()
+            .filter(|s| !to_delete.contains(&s.timestamp))
+            .collect();
+        remaining.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        let mut total: u64 = remaining.iter().map(|s| s.size_bytes).sum();
+        let mut idx = 0;
+        while total > max_bytes && idx < remaining.len() {
+            let victim = remaining[idx];
+            to_delete.insert(victim.timestamp.clone());
+            total = total.saturating_sub(victim.size_bytes);
+            idx += 1;
+        }
+    }
+
+    to_delete.into_iter().collect()
+}
+
+/// One recursive listing, bucketed by top-level segment (= timestamp).
+/// Used by both prune and the future "history size" surface.
+fn list_snapshots(backend: &Backend) -> Result<Vec<SnapshotInfo>, String> {
+    let history_root = backend.history_root_fs();
+    let (fs, remote) = rclone::split_root(&history_root);
+    let entries = rclone::list_recursive(&fs, &remote)?;
+
+    use std::collections::HashMap;
+    let mut by_ts: HashMap<String, u64> = HashMap::new();
+    for entry in entries {
+        if entry.is_dir {
+            continue;
+        }
+        let Some(slash) = entry.path.find('/') else { continue };
+        let ts = entry.path[..slash].to_string();
+        *by_ts.entry(ts).or_insert(0) += entry.size.max(0) as u64;
+    }
+
+    Ok(by_ts
+        .into_iter()
+        .map(|(timestamp, size_bytes)| SnapshotInfo { timestamp, size_bytes })
+        .collect())
+}
+
+/// Apply retention to a backend's history dir. Returns a summary. Failure
+/// to purge an individual snapshot doesn't abort the rest — best-effort.
+fn prune_history(
+    backend: &Backend,
+    history: &HistorySettings,
+) -> Result<PruneSummary, String> {
+    if !history.enabled || (history.retention_days <= 0 && history.retention_max_mb <= 0) {
+        return Ok(PruneSummary {
+            deleted_count: 0,
+            freed_bytes: 0,
+        });
+    }
+    let snapshots = list_snapshots(backend)?;
+    let now = chrono::Utc::now();
+    let targets = pick_snapshots_to_prune(
+        &snapshots,
+        history.retention_days,
+        history.retention_max_mb,
+        now,
+    );
+
+    let mut deleted = 0usize;
+    let mut freed = 0u64;
+    for ts in &targets {
+        let path = backend.snapshot_run_fs(ts);
+        match rclone::purge_at(&path) {
+            Ok(()) => {
+                deleted += 1;
+                if let Some(s) = snapshots.iter().find(|s| &s.timestamp == ts) {
+                    freed = freed.saturating_add(s.size_bytes);
+                }
+            }
+            Err(_) => {
+                // Best-effort — skip and move on. Common cause: another
+                // device already pruned this snapshot.
+            }
+        }
+    }
+
+    Ok(PruneSummary {
+        deleted_count: deleted,
+        freed_bytes: freed,
+    })
 }
 
 /// Pairs each `<path>.conflict<n>` entry with its matching "current"
@@ -1202,6 +1379,10 @@ fn do_sync(
         })?;
     }
 
+    // Best-effort retention enforcement. Errors here don't fail the sync
+    // — old snapshots lingering is annoying, but a failed sync is worse.
+    let _ = prune_history(&backend, history);
+
     Ok(SyncOutcome { initial: false })
 }
 
@@ -1440,6 +1621,7 @@ pub fn run() {
             revert_save,
             list_conflicts,
             resolve_conflict,
+            prune_history_now,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1783,5 +1965,146 @@ mod tests {
     #[test]
     fn find_conflicts_empty_input_returns_empty() {
         assert!(find_conflicts(&[]).is_empty());
+    }
+
+    // ─── parse_snapshot_ts ────────────────────────────────────────────────
+
+    #[test]
+    fn parse_snapshot_ts_valid() {
+        let parsed = parse_snapshot_ts("2026-05-09T14-30-00Z").unwrap();
+        assert_eq!(parsed.to_rfc3339(), "2026-05-09T14:30:00+00:00");
+    }
+
+    #[test]
+    fn parse_snapshot_ts_rejects_wrong_length() {
+        assert!(parse_snapshot_ts("2026-05-09").is_none());
+        assert!(parse_snapshot_ts("2026-05-09T14-30-00").is_none()); // missing Z
+        assert!(parse_snapshot_ts("2026-05-09T14-30-00Z-extra").is_none());
+    }
+
+    #[test]
+    fn parse_snapshot_ts_rejects_missing_t_separator() {
+        // T at position 10 — anything else is invalid
+        assert!(parse_snapshot_ts("2026-05-09-14-30-00Z").is_none());
+    }
+
+    #[test]
+    fn parse_snapshot_ts_rejects_garbage() {
+        assert!(parse_snapshot_ts("hello-world-foo-baz-Z").is_none());
+        assert!(parse_snapshot_ts("").is_none());
+    }
+
+    // ─── pick_snapshots_to_prune ──────────────────────────────────────────
+
+    fn snap(ts: &str, size_mb: u64) -> SnapshotInfo {
+        SnapshotInfo {
+            timestamp: ts.into(),
+            size_bytes: size_mb * 1024 * 1024,
+        }
+    }
+
+    fn at(ts: &str) -> chrono::DateTime<chrono::Utc> {
+        parse_snapshot_ts(ts).unwrap()
+    }
+
+    #[test]
+    fn pick_prune_age_rule_alone() {
+        let snaps = vec![
+            snap("2026-05-01T00-00-00Z", 100), // 8 days old @ now=05-09
+            snap("2026-05-07T00-00-00Z", 100), // 2 days old
+            snap("2026-05-09T00-00-00Z", 100), // 0 days old
+        ];
+        let now = at("2026-05-09T00-00-00Z");
+        let to_del = pick_snapshots_to_prune(&snaps, 7, 0, now); // 7-day cap, no size cap
+        assert_eq!(to_del, vec!["2026-05-01T00-00-00Z".to_string()]);
+    }
+
+    #[test]
+    fn pick_prune_size_rule_alone_oldest_first() {
+        // 3 snaps × 100 MB each = 300 MB. Cap = 250 MB → drop oldest.
+        let snaps = vec![
+            snap("2026-05-07T00-00-00Z", 100),
+            snap("2026-05-08T00-00-00Z", 100),
+            snap("2026-05-09T00-00-00Z", 100),
+        ];
+        let now = at("2026-05-09T00-00-00Z");
+        let to_del = pick_snapshots_to_prune(&snaps, 0, 250, now);
+        assert_eq!(to_del, vec!["2026-05-07T00-00-00Z".to_string()]);
+    }
+
+    #[test]
+    fn pick_prune_size_rule_drops_multiple_oldest() {
+        let snaps = vec![
+            snap("2026-05-05T00-00-00Z", 100),
+            snap("2026-05-06T00-00-00Z", 100),
+            snap("2026-05-07T00-00-00Z", 100),
+            snap("2026-05-08T00-00-00Z", 100),
+            snap("2026-05-09T00-00-00Z", 100),
+        ];
+        let now = at("2026-05-09T00-00-00Z");
+        // 500 MB total, cap 250 → drop 3 oldest to leave 200.
+        let to_del = pick_snapshots_to_prune(&snaps, 0, 250, now);
+        assert_eq!(to_del.len(), 3);
+        assert!(to_del.contains(&"2026-05-05T00-00-00Z".to_string()));
+        assert!(to_del.contains(&"2026-05-06T00-00-00Z".to_string()));
+        assert!(to_del.contains(&"2026-05-07T00-00-00Z".to_string()));
+    }
+
+    #[test]
+    fn pick_prune_both_rules_age_first_then_size() {
+        let snaps = vec![
+            snap("2026-04-01T00-00-00Z", 100), // 38 days — caught by age (30d)
+            snap("2026-05-01T00-00-00Z", 100), // 8 days — survives age
+            snap("2026-05-08T00-00-00Z", 100), // 1 day — survives age
+            snap("2026-05-09T00-00-00Z", 100), // 0 days — survives age
+        ];
+        let now = at("2026-05-09T00-00-00Z");
+        // Cap 250 MB. After age rule: 300 MB left → drop oldest of survivors.
+        let to_del = pick_snapshots_to_prune(&snaps, 30, 250, now);
+        assert_eq!(to_del.len(), 2);
+        assert!(to_del.contains(&"2026-04-01T00-00-00Z".to_string())); // age
+        assert!(to_del.contains(&"2026-05-01T00-00-00Z".to_string())); // size (oldest survivor)
+    }
+
+    #[test]
+    fn pick_prune_disabled_when_both_rules_nonpositive() {
+        let snaps = vec![
+            snap("2025-01-01T00-00-00Z", 99999), // ancient AND huge
+        ];
+        let now = at("2026-05-09T00-00-00Z");
+        assert!(pick_snapshots_to_prune(&snaps, 0, 0, now).is_empty());
+        assert!(pick_snapshots_to_prune(&snaps, -5, -5, now).is_empty());
+    }
+
+    #[test]
+    fn pick_prune_under_size_cap_keeps_all() {
+        let snaps = vec![snap("2026-05-09T00-00-00Z", 50)];
+        let now = at("2026-05-09T00-00-00Z");
+        assert!(pick_snapshots_to_prune(&snaps, 30, 500, now).is_empty());
+    }
+
+    #[test]
+    fn pick_prune_under_age_cap_keeps_all() {
+        let snaps = vec![
+            snap("2026-05-08T00-00-00Z", 10),
+            snap("2026-05-09T00-00-00Z", 10),
+        ];
+        let now = at("2026-05-09T00-00-00Z");
+        assert!(pick_snapshots_to_prune(&snaps, 30, 0, now).is_empty());
+    }
+
+    #[test]
+    fn pick_prune_skips_unparseable_timestamps() {
+        // Stray non-conformant entry shouldn't get pruned (defensive — could
+        // be user data accidentally under .history). Size rule may still
+        // count it; that's debatable but matches the "safer to keep" intent.
+        let snaps = vec![
+            snap("garbage-folder", 10),
+            snap("2026-05-01T00-00-00Z", 10), // 8 days old, age cap 7
+        ];
+        let now = at("2026-05-09T00-00-00Z");
+        let to_del = pick_snapshots_to_prune(&snaps, 7, 0, now);
+        assert!(!to_del.contains(&"garbage-folder".to_string()));
+        assert!(to_del.contains(&"2026-05-01T00-00-00Z".to_string()));
     }
 }

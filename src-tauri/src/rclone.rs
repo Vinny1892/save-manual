@@ -400,6 +400,12 @@ pub fn purge(fs: &str, path: &str) -> Result<(), String> {
         .map(|_| ())
 }
 
+/// Convenience: take a full rclone fs string and recursively delete it.
+pub fn purge_at(full: &str) -> Result<(), String> {
+    let (fs, remote) = split_root(full);
+    purge(&fs, &remote)
+}
+
 /// Delete a single file (not a directory).
 pub fn deletefile(fs: &str, path: &str) -> Result<(), String> {
     rpc_json(

@@ -45,6 +45,14 @@
   let historyDraft = $state<HistorySettings | null>(null);
   let allowsIncremental = $state(true);
 
+  interface PruneSummary {
+    deleted_count: number;
+    freed_bytes: number;
+  }
+  let pruning = $state(false);
+  let pruneMsg = $state("");
+  let pruneErr = $state("");
+
   interface ConflictEntry {
     path: string;
     conflict_path: string;
@@ -164,6 +172,27 @@
       historyErr = String(e);
     } finally {
       savingHistory = false;
+    }
+  }
+
+  async function pruneNow(emuId: string) {
+    pruning = true;
+    pruneMsg = "";
+    pruneErr = "";
+    try {
+      const r = await invoke<PruneSummary>("prune_history_now", { id: emuId });
+      const mb = (r.freed_bytes / 1024 / 1024).toFixed(1);
+      if (r.deleted_count === 0) {
+        pruneMsg = "// nada pra remover — history dentro dos limites";
+      } else {
+        pruneMsg = `// ${r.deleted_count} snapshot${r.deleted_count === 1 ? "" : "s"} removido${r.deleted_count === 1 ? "" : "s"}, ${mb} MB liberados`;
+      }
+      // Mensagem some sozinha depois de uns segundos
+      setTimeout(() => (pruneMsg = ""), 6000);
+    } catch (e) {
+      pruneErr = String(e);
+    } finally {
+      pruning = false;
     }
   }
 
@@ -912,7 +941,24 @@
         </div>
       {/if}
 
+      {#if pruneMsg}
+        <p class="hint-line" style="color: var(--success, #5ec07a); font-style: normal;">
+          {pruneMsg}
+        </p>
+      {/if}
+      {#if pruneErr}
+        <p class="hint-line err">! {pruneErr}</p>
+      {/if}
+
       <div class="field-actions">
+        <button
+          class="btn btn-thin"
+          onclick={() => pruneNow(emu.id)}
+          disabled={pruning || !emu.dest_path}
+          title="aplica retention agora — sync também faz isso automaticamente"
+        >
+          {pruning ? "// pruning…" : "[ prune now ]"}
+        </button>
         <button
           class="btn"
           onclick={saveHistory}
@@ -1174,6 +1220,8 @@
     margin-top: 0.85rem;
     display: flex;
     justify-content: flex-end;
+    gap: 0.5rem;
+    flex-wrap: wrap;
   }
 
   .btn {
