@@ -275,7 +275,8 @@ main {
   color: var(--text-faint);
 }
 
-.theme-toggle {
+.theme-toggle,
+.locale-toggle {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--text-soft);
@@ -288,7 +289,8 @@ main {
   margin-left: 0.3rem;
 }
 
-.theme-toggle:hover {
+.theme-toggle:hover,
+.locale-toggle:hover {
   border-color: var(--border-strong);
   color: var(--text-bright);
   background: var(--hover-tint);
@@ -441,12 +443,14 @@ html[data-tinted] .bar .clock {
 }
 
 html[data-tinted] .theme-toggle,
+html[data-tinted] .locale-toggle,
 html[data-tinted] .wm-btn {
   border-color: rgba(var(--game-tint), 0.5);
   color: rgba(var(--game-tint), 0.85);
 }
 
 html[data-tinted] .theme-toggle:hover,
+html[data-tinted] .locale-toggle:hover,
 html[data-tinted] .wm-btn:hover {
   border-color: rgb(var(--game-tint));
   color: rgb(var(--game-tint));

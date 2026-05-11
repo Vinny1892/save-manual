@@ -96,7 +96,7 @@ async fn set_emulator_paths(
     let kind = match dest_kind.as_str() {
         "local" | "rclone" => dest_kind.as_str(),
         "" => "local",
-        _ => return Err(format!("dest_kind inválido: {dest_kind}")),
+        _ => return Err("dest_kind_invalid".into()),
     };
     {
         let s = state.lock().await;
@@ -150,7 +150,7 @@ async fn sync_now(
         let s = state.lock().await;
         let emu = db::get(&s.conn, &id)?;
         if !emu.enabled {
-            return Err("Emulador desativado".into());
+            return Err("emulator_disabled".into());
         }
         validate_config(&emu)?;
         let history = db::get_history_settings(&s.conn, &id)?;
@@ -181,7 +181,7 @@ async fn start_watch(
         }
         let emu = db::get(&s.conn, &id)?;
         if !emu.enabled {
-            return Err("Emulador desativado".into());
+            return Err("emulator_disabled".into());
         }
         validate_config(&emu)?;
         (std::path::PathBuf::from(&emu.source_path), emu)
@@ -259,10 +259,10 @@ async fn start_proc_watch(
         }
         let emu = db::get(&s.conn, &id)?;
         if !emu.enabled {
-            return Err("Emulador desativado".into());
+            return Err("emulator_disabled".into());
         }
         if emu.process_name.is_empty() {
-            return Err("Nome do processo não configurado".into());
+            return Err("process_name_missing".into());
         }
         validate_config(&emu)?;
         let proc_name = emu.process_name.clone();
@@ -334,7 +334,7 @@ async fn list_saves(id: String, state: State<'_, AppState>) -> Result<Vec<saves:
         (db::get(&s.conn, &id)?.source_path, s.titles.map.clone())
     };
     if source.is_empty() {
-        return Err("Configuração incompleta".into());
+        return Err("config_incomplete_source".into());
     }
     let mut entries = saves::list_saves(&id, &source);
     if id == "eden" {
@@ -370,7 +370,7 @@ async fn get_save_entry(
         (db::get(&s.conn, &id)?.source_path, s.titles.map.clone())
     };
     if source.is_empty() {
-        return Err("Configuração incompleta".into());
+        return Err("config_incomplete_source".into());
     }
     let mut entry = saves::get_save(&id, &source, &raw_id);
     if id == "eden" {
@@ -431,7 +431,7 @@ async fn open_save_folder(
         db::get(&s.conn, &id)?.source_path
     };
     let path = saves::save_fs_path(&id, &source, &raw_id)
-        .ok_or_else(|| format!("save not found: {raw_id}"))?;
+        .ok_or_else(|| "save_not_found".to_string())?;
     app.opener()
         .open_path(path.to_string_lossy().as_ref(), None::<&str>)
         .map_err(|e| e.to_string())
@@ -996,7 +996,7 @@ async fn list_save_history(
     };
 
     let sub_path = saves::save_sub_path(&id, &source, &raw_id)
-        .ok_or_else(|| format!("save não encontrado: {raw_id}"))?;
+        .ok_or_else(|| "save_not_found".to_string())?;
     let backend = Backend::for_emulator(&emu)?;
 
     // Single recursive listing of the whole .history/<emu_id>/ tree.
@@ -1043,7 +1043,7 @@ async fn resolve_conflict(
     };
 
     let (original, _) = strip_conflict_marker(&conflict_path)
-        .ok_or_else(|| format!("não é um marker de conflito: {conflict_path}"))?;
+        .ok_or_else(|| "conflict_marker_invalid".to_string())?;
 
     let backend = Backend::for_emulator(&emu)?;
     let live_root = backend.live_fs();
@@ -1079,7 +1079,7 @@ async fn resolve_conflict(
             rclone::move_file_at(&live_conflict, &live_renamed)?;
             let _ = rclone::move_file_at(&source_conflict, &source_renamed);
         }
-        _ => return Err(format!("ação inválida: {action} (use keep_current|use_conflict|keep_both)")),
+        _ => return Err("resolve_action_invalid".into()),
     }
 
     // Live + source mutated outside the bisync flow — invalidate state so
@@ -1109,7 +1109,7 @@ async fn revert_save(
     };
 
     let sub_path = saves::save_sub_path(&id, &source, &raw_id)
-        .ok_or_else(|| format!("save não encontrado: {raw_id}"))?;
+        .ok_or_else(|| "save_not_found".to_string())?;
     let backend = Backend::for_emulator(&emu)?;
 
     // File-based emus (pcsx2) treat the save as a single file — picks
@@ -1126,7 +1126,7 @@ async fn revert_save(
     } else if rclone::stat_path(&delta_src)?.is_some() {
         delta_src
     } else {
-        return Err(format!("save não encontrado em .history/{timestamp}"));
+        return Err("save_not_found_in_history".into());
     };
 
     // Two destinations to keep consistent: the cloud/local live copy and
@@ -1158,18 +1158,18 @@ async fn list_memcard_saves(
     state: State<'_, AppState>,
 ) -> Result<Vec<ps2mc::McSave>, String> {
     if id != "pcsx2" {
-        return Err("memcard parsing só suportado para pcsx2".into());
+        return Err("memcard_not_supported".into());
     }
     let (source, ps2_titles) = {
         let s = state.lock().await;
         (db::get(&s.conn, &id)?.source_path, s.ps2.map.clone())
     };
     if source.is_empty() {
-        return Err("Configuração incompleta".into());
+        return Err("config_incomplete_source".into());
     }
     let path = std::path::Path::new(&source).join(&raw_id);
     if !path.exists() {
-        return Err(format!("memcard não encontrado: {raw_id}"));
+        return Err("memcard_not_found".into());
     }
     let mut saves = ps2mc::list_saves(&path)?;
     for save in &mut saves {
@@ -1220,7 +1220,7 @@ async fn refresh_ps2_db(
     let target = {
         let mut s = state.lock().await;
         if s.ps2_db_refreshing {
-            return Err("já em andamento".into());
+            return Err("db_already_refreshing".into());
         }
         s.ps2_db_refreshing = true;
         s.ps2_db_path.clone()
@@ -1258,7 +1258,7 @@ async fn refresh_title_db(
     let target = {
         let mut s = state.lock().await;
         if s.title_db_refreshing {
-            return Err("já em andamento".into());
+            return Err("db_already_refreshing".into());
         }
         s.title_db_refreshing = true;
         s.title_db_path.clone()
@@ -1406,11 +1406,7 @@ fn do_initial_bisync(
     let remote_has = backend.live_has_data().unwrap_or(false);
 
     let resync_mode = match (local_has, remote_has) {
-        (false, false) => {
-            return Err(
-                "nada para sincronizar — origem e destino vazios. coloque saves em algum lugar primeiro.".into(),
-            );
-        }
+        (false, false) => return Err("initial_sync_both_empty".into()),
         (true, false) => "path1",
         (false, true) => "path2",
         (true, true) => "newer",
@@ -1441,13 +1437,13 @@ fn do_initial_bisync(
 
 fn validate_config(emu: &Emulator) -> Result<(), String> {
     if emu.source_path.is_empty() {
-        return Err("Configuração incompleta: source_path".into());
+        return Err("config_incomplete_source".into());
     }
     if emu.dest_path.is_empty() {
-        return Err("Configuração incompleta: dest_path".into());
+        return Err("config_incomplete_dest".into());
     }
     if emu.dest_kind == "rclone" && emu.dest_remote.is_empty() {
-        return Err("Configuração incompleta: rclone remote".into());
+        return Err("config_incomplete_remote".into());
     }
     Ok(())
 }

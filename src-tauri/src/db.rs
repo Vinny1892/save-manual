@@ -321,10 +321,7 @@ pub fn set_history_settings(conn: &Connection, s: &HistorySettings) -> Result<()
     // let the user save both off. If history is fully disabled, modes are
     // free to be whatever (they're inert anyway).
     if s.enabled && !incremental && !full {
-        return Err(
-            "selecione pelo menos um modo de backup (incremental ou full) quando history está ativo"
-                .into(),
-        );
+        return Err("history_mode_required".into());
     }
 
     conn.execute(

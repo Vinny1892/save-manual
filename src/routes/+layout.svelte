@@ -6,6 +6,13 @@
   import { theme, applyStoredTheme, toggleTheme } from "$lib/theme";
   import { hydrateFromList, applyChanged, emulators } from "$lib/store";
   import { invoke } from "@tauri-apps/api/core";
+  import { _, isLoading } from "svelte-i18n";
+  import {
+    locale,
+    setLocale,
+    nextLocale,
+    localeLabel,
+  } from "$lib/i18n";
 
   const win = getCurrentWindow();
 
@@ -23,7 +30,14 @@
   });
 
   function fmtClock(d: Date) {
-    return d.toLocaleTimeString("pt-BR", { hour12: false });
+    // Clock format is intentionally locale-agnostic (24h hh:mm:ss) — that's
+    // the same shape across our 3 supported locales and matches the
+    // monospace/terminal aesthetic.
+    return d.toLocaleTimeString("en-GB", { hour12: false });
+  }
+
+  function cycleLocale() {
+    setLocale(nextLocale($locale ?? "pt-BR"));
   }
 </script>
 
@@ -34,30 +48,45 @@
   <header class="bar" data-tauri-drag-region>
     <div class="bar-left" data-tauri-drag-region>
       <span class="led led-green"></span>
-      <span class="bar-label" data-tauri-drag-region>SAVE-SYNC.SYS</span>
-      <span class="bar-meta" data-tauri-drag-region>v0.1.0 / nt-x64</span>
+      <span class="bar-label" data-tauri-drag-region>{$_("header.app_name")}</span>
+      <span class="bar-meta" data-tauri-drag-region>{$_("header.version_tag")}</span>
     </div>
     <div class="bar-right">
-      <span class="bar-meta" data-tauri-drag-region>{$emulators.length} units</span>
+      <span class="bar-meta" data-tauri-drag-region>
+        {$_("header.units_label", { values: { n: $emulators.length } })}
+      </span>
       <span class="divider" data-tauri-drag-region>·</span>
       <span class="bar-meta clock" data-tauri-drag-region>{fmtClock(now)}</span>
-      <button class="theme-toggle" onclick={toggleTheme} aria-label="toggle theme">
+      <button
+        class="locale-toggle"
+        onclick={cycleLocale}
+        aria-label={$_("header.toggle_locale")}
+        title={$_("header.toggle_locale")}
+      >
+        [ {localeLabel($locale ?? "pt-BR")} ]
+      </button>
+      <button class="theme-toggle" onclick={toggleTheme} aria-label={$_("header.toggle_theme")}>
         {$theme === "dark" ? "[ ☼ ]" : $theme === "light" ? "[ ❄ ]" : "[ ☾ ]"}
       </button>
       <div class="wm-btns">
-        <button class="wm-btn" onclick={() => win.minimize()} aria-label="minimizar">─</button>
-        <button class="wm-btn" onclick={() => win.toggleMaximize()} aria-label="maximizar">□</button>
-        <button class="wm-btn wm-close" onclick={() => win.close()} aria-label="fechar">×</button>
+        <button class="wm-btn" onclick={() => win.minimize()} aria-label={$_("header.minimize")}>─</button>
+        <button class="wm-btn" onclick={() => win.toggleMaximize()} aria-label={$_("header.maximize")}>□</button>
+        <button class="wm-btn wm-close" onclick={() => win.close()} aria-label={$_("header.close")}>×</button>
       </div>
     </div>
   </header>
 
   <main>
-    {@render children()}
+    {#if $isLoading}
+      <!-- Hide content until i18n dict is loaded — prevents flash of raw keys -->
+      <p style="padding: 2rem; color: var(--text-muted); font-size: 0.74rem;">// init i18n…</p>
+    {:else}
+      {@render children()}
+    {/if}
 
     <footer class="foot">
       <span>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>
-      <span class="foot-meta">eof / ready</span>
+      <span class="foot-meta">{$_("footer.eof")}</span>
     </footer>
   </main>
 </div>

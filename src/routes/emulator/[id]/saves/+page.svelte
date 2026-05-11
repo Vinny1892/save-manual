@@ -3,6 +3,8 @@
   import { invoke } from "@tauri-apps/api/core";
   import { emulators } from "$lib/store";
   import { derived } from "svelte/store";
+  import { _ } from "svelte-i18n";
+  import { tErr } from "$lib/i18n";
 
   interface SaveEntry {
     raw_id: string;
@@ -86,7 +88,7 @@
     try {
       entries = await invoke<SaveEntry[]>("list_saves", { id: emuId });
     } catch (err) {
-      loadErr = String(err);
+      loadErr = tErr(err);
     } finally {
       loading = false;
     }
@@ -116,22 +118,22 @@
 
 <section class="topnav">
   <a class="back" href="/emulator/{emuId}">
-    <span class="back-arrow">◀</span> back
+    <span class="back-arrow">◀</span> {$_("common.back")}
   </a>
   {#if $current}
-    <span class="nav-title">{$current.name} / saves</span>
+    <span class="nav-title">{$_("saves_list.title", { values: { name: $current.name } })}</span>
   {/if}
   <div class="view-toggle">
     <button
       class="vbtn"
       class:active={viewMode === "grid"}
-      title="grid view"
+      title={$_("saves_list.view_grid")}
       onclick={() => (viewMode = "grid")}
     >⊞</button>
     <button
       class="vbtn"
       class:active={viewMode === "list"}
-      title="list view"
+      title={$_("saves_list.view_list")}
       onclick={() => (viewMode = "list")}
     >≡</button>
   </div>
@@ -139,16 +141,18 @@
 
 {#if loadErr}
   <section class="alert">
-    <span class="alert-tag">! ERROR</span>
+    <span class="alert-tag">{$_("common.error_tag")}</span>
     <span>{loadErr}</span>
   </section>
 {/if}
 
 {#if loading}
-  <p class="status-line">// scanning saves…</p>
+  <p class="status-line">{$_("saves_list.loading")}</p>
 {:else}
   <p class="status-line">
-    // {entries.length} save{entries.length !== 1 ? "s" : ""} found
+    {entries.length === 1
+      ? $_("saves_list.found_singular", { values: { n: entries.length } })
+      : $_("saves_list.found_plural", { values: { n: entries.length } })}
   </p>
 
   {#if viewMode === "grid"}

@@ -252,7 +252,7 @@ pub fn save_fs_path(emulator_id: &str, source_path: &str, raw_id: &str) -> Optio
 
 pub fn delete_save(emulator_id: &str, source_path: &str, raw_id: &str) -> Result<(), String> {
     let p = save_fs_path(emulator_id, source_path, raw_id)
-        .ok_or_else(|| format!("save not found: {raw_id}"))?;
+        .ok_or_else(|| "save_not_found".to_string())?;
     if p.is_dir() {
         std::fs::remove_dir_all(&p).map_err(|e| e.to_string())
     } else {
@@ -278,7 +278,7 @@ pub fn sync_one(
                     return backend.child(&sub).copy_dir_contents(&from);
                 }
             }
-            Err(format!("save not found: {raw_id}"))
+            Err("save_not_found".to_string())
         }
         "rpcs3" => {
             let home_src = Path::new(source).join("home");
@@ -290,7 +290,7 @@ pub fn sync_one(
                     return backend.child(&sub).copy_dir_contents(&from);
                 }
             }
-            Err(format!("save not found: {raw_id}"))
+            Err("save_not_found".to_string())
         }
         "pcsx2" => {
             let from = Path::new(source).join(raw_id);

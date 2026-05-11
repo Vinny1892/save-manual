@@ -4,6 +4,8 @@
   import { invoke } from "@tauri-apps/api/core";
   import { emulators } from "$lib/store";
   import { derived } from "svelte/store";
+  import { _ } from "svelte-i18n";
+  import { tErr, locale } from "$lib/i18n";
 
   interface SaveEntry {
     raw_id: string;
@@ -82,7 +84,7 @@
       entry = await invoke<SaveEntry | null>("get_save_entry", { id: emuId, rawId });
       if (entry) fetchCover(entry.title);
     } catch (e) {
-      loadErr = String(e);
+      loadErr = tErr(e);
     }
   }
 
@@ -110,7 +112,7 @@
       syncOk = true;
       setTimeout(() => (syncOk = false), 3000);
     } catch (e) {
-      actionErr = String(e);
+      actionErr = tErr(e);
     } finally {
       syncing = false;
     }
@@ -121,7 +123,7 @@
     try {
       await invoke("open_save_folder", { id: emuId, rawId });
     } catch (e) {
-      actionErr = String(e);
+      actionErr = tErr(e);
     }
   }
 
@@ -132,7 +134,7 @@
       await invoke("delete_save_entry", { id: emuId, rawId });
       goto(`/emulator/${emuId}/saves`);
     } catch (e) {
-      actionErr = String(e);
+      actionErr = tErr(e);
       deleting = false;
       confirmDelete = false;
     }
@@ -155,7 +157,7 @@
     try {
       history = await invoke<HistoryVersion[]>("list_save_history", { id: emuId, rawId });
     } catch (e) {
-      historyErr = String(e);
+      historyErr = tErr(e);
     } finally {
       historyLoading = false;
     }
@@ -173,7 +175,7 @@
       // once user re-syncs, but listing doesn't change instantly).
       await loadEntry();
     } catch (e) {
-      historyErr = String(e);
+      historyErr = tErr(e);
     } finally {
       revertingTs = null;
       confirmRevert = null;
@@ -197,7 +199,7 @@
   function fmtTs(ts: string): string {
     const d = parseTs(ts);
     if (!d) return ts;
-    return d.toLocaleString("pt-BR", {
+    return d.toLocaleString($locale ?? "pt-BR", {
       day: "2-digit",
       month: "2-digit",
       year: "numeric",
@@ -212,9 +214,9 @@
     const diffSec = (Date.now() - d.getTime()) / 1000;
     const hours = diffSec / 3600;
     const days = hours / 24;
-    if (days >= 1) return `${Math.round(days)}d atrás`;
-    if (hours >= 1) return `${Math.round(hours)}h atrás`;
-    return `${Math.max(1, Math.round(diffSec / 60))}min atrás`;
+    if (days >= 1) return $_("units.d_ago", { values: { n: Math.round(days) } });
+    if (hours >= 1) return $_("units.h_ago", { values: { n: Math.round(hours) } });
+    return $_("units.min_ago", { values: { n: Math.max(1, Math.round(diffSec / 60)) } });
   }
 </script>
 
@@ -229,7 +231,7 @@
 
 <section class="topnav">
   <button class="back" onclick={() => goto(`/emulator/${emuId}/saves`)}>
-    <span class="back-arrow">◀</span> back
+    <span class="back-arrow">◀</span> {$_("common.back")}
   </button>
   {#if $current && entry}
     <span class="nav-title">{$current.name} / saves / {entry.title}</span>
@@ -238,11 +240,11 @@
 
 {#if loadErr}
   <section class="alert">
-    <span class="alert-tag">! ERROR</span>
+    <span class="alert-tag">{$_("common.error_tag")}</span>
     <span>{loadErr}</span>
   </section>
 {:else if !entry}
-  <p class="status-line">// loading…</p>
+  <p class="status-line">// {$_("common.loading")}…</p>
 {:else}
   <div class="detail">
     <div class="cover-panel">
@@ -273,18 +275,18 @@
 
       <div class="stats">
         <div class="stat">
-          <span class="stat-label">// size</span>
+          <span class="stat-label">{$_("save_detail.size")}</span>
           <span class="stat-value">{fmtBytes(entry.size_bytes)}</span>
         </div>
         {#if entry.modified}
           <div class="stat">
-            <span class="stat-label">// modified</span>
+            <span class="stat-label">{$_("save_detail.modified")}</span>
             <span class="stat-value">{entry.modified}</span>
           </div>
         {/if}
         {#if $current?.last_sync}
           <div class="stat">
-            <span class="stat-label">// last sync</span>
+            <span class="stat-label">{$_("save_detail.last_sync")}</span>
             <span class="stat-value">{$current.last_sync}</span>
           </div>
         {/if}
@@ -292,26 +294,26 @@
 
       <div class="actions">
         {#if readOnly}
-          <p class="readonly-note">// list-only mode — backup via [ sync now ] on the unit page</p>
+          <p class="readonly-note">{$_("save_detail.readonly_note")}</p>
         {:else}
           <button class="action-btn" onclick={syncSave} disabled={syncing}>
-            {#if syncing}// syncing…{:else if syncOk}// sync done ✓{:else}[ sync this save ]{/if}
+            {#if syncing}{$_("save_detail.sync_syncing")}{:else if syncOk}{$_("save_detail.sync_done")}{:else}{$_("save_detail.sync_btn")}{/if}
           </button>
         {/if}
-        <button class="action-btn" onclick={openFolder}>[ open folder ]</button>
+        <button class="action-btn" onclick={openFolder}>{$_("save_detail.open_folder_btn")}</button>
 
         {#if !readOnly}
           {#if !confirmDelete}
             <button class="action-btn danger" onclick={() => (confirmDelete = true)}>
-              [ delete save ]
+              {$_("save_detail.delete_btn")}
             </button>
           {:else}
             <div class="confirm-row">
-              <span class="confirm-label">! confirm delete?</span>
+              <span class="confirm-label">{$_("save_detail.confirm_delete")}</span>
               <button class="action-btn danger" onclick={deleteSave} disabled={deleting}>
-                {deleting ? "deleting…" : "[ yes, delete ]"}
+                {deleting ? $_("save_detail.deleting") : $_("save_detail.confirm_delete_yes")}
               </button>
-              <button class="action-btn" onclick={() => (confirmDelete = false)}>[ cancel ]</button>
+              <button class="action-btn" onclick={() => (confirmDelete = false)}>{$_("common.cancel")}</button>
             </div>
           {/if}
         {/if}
@@ -325,21 +327,23 @@
 
   <section class="history-card">
     <header class="hist-head">
-      <span class="hist-tag">[ history ]</span>
+      <span class="hist-tag">{$_("save_detail.history_tag")}</span>
       <span class="hist-meta">
         {#if historyLoading}
-          // loading…
+          // {$_("common.loading")}…
         {:else}
-          {history.length} {history.length === 1 ? "version" : "versions"}
+          {history.length === 1
+            ? $_("units.version_count_singular", { values: { n: history.length } })
+            : $_("units.version_count_plural", { values: { n: history.length } })}
         {/if}
       </span>
-      <button class="hist-refresh" onclick={loadHistory} disabled={historyLoading} aria-label="refresh">↻</button>
+      <button class="hist-refresh" onclick={loadHistory} disabled={historyLoading} aria-label={$_("common.refresh")}>↻</button>
     </header>
 
     {#if historyErr}
       <p class="hist-err">! {historyErr}</p>
     {:else if !historyLoading && history.length === 0}
-      <p class="hist-empty">// nenhuma versão anterior — history só começa a popular depois do segundo sync</p>
+      <p class="hist-empty">{$_("save_detail.history_empty")}</p>
     {:else}
       <ul class="hist-list">
         {#each history as h (h.timestamp)}
@@ -349,22 +353,22 @@
               <span class="hist-age">{ageLabel(h.timestamp)}</span>
             </div>
             <div class="hist-modes">
-              {#if h.has_full}<span class="badge full">[ full ]</span>{/if}
-              {#if h.has_delta}<span class="badge delta">[ delta ]</span>{/if}
+              {#if h.has_full}<span class="badge full">{$_("save_detail.badge_full")}</span>{/if}
+              {#if h.has_delta}<span class="badge delta">{$_("save_detail.badge_delta")}</span>{/if}
             </div>
             <span class="hist-size">{fmtBytes(h.size_bytes)}</span>
             <div class="hist-action">
               {#if confirmRevert === h.timestamp}
-                <span class="confirm-label">! sobrescreve atual?</span>
+                <span class="confirm-label">{$_("save_detail.history_revert_confirm")}</span>
                 <button class="action-btn danger" onclick={() => revert(h.timestamp)} disabled={revertingTs !== null}>
-                  {revertingTs === h.timestamp ? "…" : "[ confirm ]"}
+                  {revertingTs === h.timestamp ? "…" : $_("common.confirm")}
                 </button>
-                <button class="action-btn" onclick={() => (confirmRevert = null)}>[ cancel ]</button>
+                <button class="action-btn" onclick={() => (confirmRevert = null)}>{$_("common.cancel")}</button>
               {:else if revertOk === h.timestamp}
-                <span class="revert-ok">// reverted ✓</span>
+                <span class="revert-ok">{$_("save_detail.history_revert_ok")}</span>
               {:else}
                 <button class="action-btn" onclick={() => (confirmRevert = h.timestamp)} disabled={revertingTs !== null || readOnly && !h.has_full}>
-                  [ revert ]
+                  {$_("save_detail.history_revert_btn")}
                 </button>
               {/if}
             </div>
@@ -374,7 +378,7 @@
     {/if}
 
     {#if revertOk}
-      <p class="hist-hint">// na próxima sync o rclone vai re-baselinar (resync) — esperado, e não dura muito</p>
+      <p class="hist-hint">{$_("save_detail.history_revert_hint")}</p>
     {/if}
   </section>
 {/if}

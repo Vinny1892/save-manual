@@ -330,6 +330,24 @@ gatilho do local (sync now / watcher / proc-watch).
   pra evitar conflito artificial). Confirmação inline antes de
   sobrescrever — sem dialog modal por enquanto.
 
+### i18n (3 idiomas)
+
+`svelte-i18n` carrega 3 dicionários em `src/lib/i18n/{pt-BR,en,es}.json`. Default = `pt-BR` (com fallback pra navegador via `navigator.language`), persiste em `localStorage["save-sync-locale"]`. Toggle no header cicla BR → EN → ES.
+
+Padrão de uso:
+
+```svelte
+<span>{$_("emulator.history.tag")}</span>
+<button>{$_("common.confirm")}</button>
+```
+
+**Erros do backend** seguem convenção de código: cada `Err(...)` retorna uma string-código tipo `"save_not_found"` em vez de mensagem humana. `tErr()` em `src/lib/i18n/index.ts` mapeia `<code>` → `errors.<code>` no dict ativo. Strings que não casam com chave conhecida caem em fallback raw — então código legado continua exibindo, só sem tradução.
+
+Códigos existentes (todos com tradução nos 3 idiomas):
+`config_incomplete_source`, `config_incomplete_dest`, `config_incomplete_remote`, `dest_kind_invalid`, `emulator_disabled`, `process_name_missing`, `save_not_found`, `save_not_found_in_history`, `conflict_marker_invalid`, `resolve_action_invalid`, `history_mode_required`, `initial_sync_both_empty`, `memcard_not_supported`, `memcard_not_found`, `db_already_refreshing`.
+
+Adicionar idioma novo: criar `src/lib/i18n/<locale>.json` espelhando a hierarquia dos 3 existentes, adicionar em `SUPPORTED_LOCALES` no index.ts, e `register()` o import.
+
 ### Tema
 
 3 temas em `src/app.css` com CSS vars (`--bg`, `--accent`, `--text`, etc).
@@ -427,6 +445,7 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 - [x] **Fase 2**: UI de revert (`list_save_history` + `revert_save` + card `[ history ]` no save detail)
 - [x] **Fase 3**: Conflict resolution via `--conflict-loser num` (loser preservado como `.conflict1`, card `[ conflicts ]` no emulator detail com 3 ações: keep_current / use_conflict / keep_both)
 - [x] **Fase 4**: Prune automático (retention_days + retention_max_mb enforced ao fim de cada sync; botão `[ prune now ]` manual disponível)
+- [x] **i18n**: pt-BR + en + es via `svelte-i18n`, toggle no header (BR/EN/ES), backend emite códigos (`save_not_found`, etc) que o frontend traduz
 - [x] Testes unitários (81 testes em backend/db/lib/rclone — `cargo test --lib`)
 - [ ] Duplicação de memcard PCSX2 em vez de overwrite quando há conflito
 - [ ] Async sync com progress (core/stats)

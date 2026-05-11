@@ -7,6 +7,8 @@
   import { emulators, type EmulatorView } from "$lib/store";
   import { derived } from "svelte/store";
   import { onMount } from "svelte";
+  import { _ } from "svelte-i18n";
+  import { tErr } from "$lib/i18n";
 
   interface DetectCandidate { path: string; label: string; }
 
@@ -119,7 +121,7 @@
       historyDraft = { ...s };
       allowsIncremental = allows;
     } catch (e) {
-      historyErr = String(e);
+      historyErr = tErr(e);
     }
   }
 
@@ -169,7 +171,7 @@
       await invoke("set_history_settings", { settings: historyDraft });
       history = { ...historyDraft };
     } catch (e) {
-      historyErr = String(e);
+      historyErr = tErr(e);
     } finally {
       savingHistory = false;
     }
@@ -183,14 +185,16 @@
       const r = await invoke<PruneSummary>("prune_history_now", { id: emuId });
       const mb = (r.freed_bytes / 1024 / 1024).toFixed(1);
       if (r.deleted_count === 0) {
-        pruneMsg = "// nada pra remover — history dentro dos limites";
+        pruneMsg = $_("emulator.history.prune_summary_empty");
       } else {
-        pruneMsg = `// ${r.deleted_count} snapshot${r.deleted_count === 1 ? "" : "s"} removido${r.deleted_count === 1 ? "" : "s"}, ${mb} MB liberados`;
+        pruneMsg = $_("emulator.history.prune_summary_done", {
+          values: { n: r.deleted_count, mb },
+        });
       }
-      // Mensagem some sozinha depois de uns segundos
+      // Auto-clear after a few seconds.
       setTimeout(() => (pruneMsg = ""), 6000);
     } catch (e) {
-      pruneErr = String(e);
+      pruneErr = tErr(e);
     } finally {
       pruning = false;
     }
@@ -202,7 +206,7 @@
     try {
       conflicts = await invoke<ConflictEntry[]>("list_conflicts", { id: emuId });
     } catch (e) {
-      conflictsErr = String(e);
+      conflictsErr = tErr(e);
       conflicts = [];
     } finally {
       conflictsLoading = false;
@@ -221,7 +225,7 @@
       // Optimistic: remove resolved row immediately rather than refetching.
       conflicts = conflicts.filter((x) => x.conflict_path !== c.conflict_path);
     } catch (e) {
-      conflictsErr = String(e);
+      conflictsErr = tErr(e);
     } finally {
       resolvingPath = null;
     }
@@ -264,7 +268,7 @@
         r.replace(/:$/, ""),
       );
     } catch (e) {
-      remotesErr = String(e);
+      remotesErr = tErr(e);
     }
   }
 
@@ -277,7 +281,7 @@
         else destDraft = selected;
       }
     } catch (err) {
-      debugMsg = "pickFolder: " + String(err);
+      debugMsg = "pickFolder: " + tErr(err);
     }
   }
 
@@ -294,7 +298,7 @@
       });
       if (emu.id === "eden" && sourceDraft) refreshEdenUuid(sourceDraft);
     } catch (err) {
-      debugMsg = "set_emulator_paths: " + String(err);
+      debugMsg = "set_emulator_paths: " + tErr(err);
     } finally {
       savingPaths = false;
     }
@@ -305,7 +309,7 @@
     try {
       await invoke("sync_now", { id: emu.id });
     } catch (err) {
-      debugMsg = "sync_now: " + String(err);
+      debugMsg = "sync_now: " + tErr(err);
     }
   }
 
@@ -318,7 +322,7 @@
         await invoke("start_watch", { id: emu.id });
       }
     } catch (err) {
-      debugMsg = "watch: " + String(err);
+      debugMsg = "watch: " + tErr(err);
     }
   }
 
@@ -331,7 +335,7 @@
         await invoke("start_proc_watch", { id: emu.id });
       }
     } catch (err) {
-      debugMsg = "proc_watch: " + String(err);
+      debugMsg = "proc_watch: " + tErr(err);
     }
   }
 
@@ -341,7 +345,7 @@
     try {
       await invoke("set_process_name", { id: emu.id, processName: procNameDraft });
     } catch (err) {
-      debugMsg = "set_process_name: " + String(err);
+      debugMsg = "set_process_name: " + tErr(err);
     } finally {
       savingProcName = false;
     }
@@ -356,7 +360,7 @@
     try {
       await invoke("set_enabled", { id: emu.id, enabled: !emu.enabled });
     } catch (err) {
-      debugMsg = "set_enabled: " + String(err);
+      debugMsg = "set_enabled: " + tErr(err);
     }
   }
 
@@ -386,7 +390,7 @@
       detectCandidates = await invoke<DetectCandidate[]>("detect_save_paths", { id: emu.id });
       detectDone = true;
     } catch (err) {
-      debugMsg = "detect: " + String(err);
+      debugMsg = "detect: " + tErr(err);
     } finally {
       detecting = false;
     }
@@ -413,7 +417,7 @@
     try {
       titleDb = await invoke<TitleDbStatus>("title_db_status");
     } catch (e) {
-      titleDbErr = String(e);
+      titleDbErr = tErr(e);
     }
   }
 
@@ -423,7 +427,7 @@
       await invoke("refresh_title_db");
       await loadTitleDbStatus();
     } catch (e) {
-      titleDbErr = String(e);
+      titleDbErr = tErr(e);
       await loadTitleDbStatus();
     }
   }
@@ -432,7 +436,7 @@
     try {
       ps2Db = await invoke<TitleDbStatus>("ps2_db_status");
     } catch (e) {
-      ps2DbErr = String(e);
+      ps2DbErr = tErr(e);
     }
   }
 
@@ -442,7 +446,7 @@
       await invoke("refresh_ps2_db");
       await loadPs2DbStatus();
     } catch (e) {
-      ps2DbErr = String(e);
+      ps2DbErr = tErr(e);
       await loadPs2DbStatus();
     }
   }
@@ -461,14 +465,14 @@
 </script>
 
 <section class="topnav">
-  <button class="back" onclick={back} aria-label="voltar">
-    <span class="back-arrow">◀</span> back to index
+  <button class="back" onclick={back} aria-label={$_("common.back")}>
+    <span class="back-arrow">◀</span> {$_("common.back")}
   </button>
 </section>
 
 {#if !$current}
   <section class="empty">
-    <p>// unit not found · <button class="link" onclick={back}>return</button></p>
+    <p>{$_("emulator.unit_not_found")}<button class="link" onclick={back}>{$_("emulator.return")}</button></p>
   </section>
 {:else}
   {@const emu = $current}
@@ -479,21 +483,21 @@
       <h1>{emu.name}</h1>
       <span class="state-tag">
         {#if !emu.enabled}
-          // disabled
+          {$_("emulator.state_disabled")}
         {:else if emu.watching}
-          // watching
+          {$_("emulator.state_watching")}
         {:else}
-          // idle
+          {$_("emulator.state_idle")}
         {/if}
       </span>
     </div>
-    <p class="head-id">unit_id :: {emu.id}</p>
+    <p class="head-id">{$_("emulator.unit_id_label", { values: { id: emu.id } })}</p>
   </section>
 
   <section class="card ops">
     <header class="card-head">
-      <span class="card-tag">[ ops ]</span>
-      <span class="card-meta">control surface</span>
+      <span class="card-tag">{$_("emulator.ops.tag")}</span>
+      <span class="card-meta">{$_("emulator.ops.subtitle")}</span>
     </header>
 
     <div class="ops-row">
@@ -502,11 +506,11 @@
         class:on={emu.enabled}
         onclick={() => toggleEnabled(emu)}
       >
-        {emu.enabled ? "[ disable unit ]" : "[ enable unit ]"}
+        {emu.enabled ? $_("emulator.ops.disable_unit") : $_("emulator.ops.enable_unit")}
       </button>
 
       <button class="btn" onclick={() => viewSaves(emu)}>
-        ▤ view saves
+        {$_("emulator.ops.view_saves")}
       </button>
 
       <button
@@ -514,7 +518,7 @@
         onclick={() => syncNow(emu)}
         disabled={!emu.enabled}
       >
-        [ sync now ]
+        {$_("emulator.ops.sync_now")}
       </button>
 
       <button
@@ -523,63 +527,67 @@
         onclick={() => toggleWatch(emu)}
         disabled={!emu.enabled}
       >
-        {emu.watching ? "[ halt watcher ]" : "[ engage watcher ]"}
+        {emu.watching ? $_("emulator.ops.halt_watcher") : $_("emulator.ops.engage_watcher")}
       </button>
     </div>
   </section>
 
   {#if debugMsg}
     <section class="alert">
-      <span class="alert-tag">! TRACE</span>
+      <span class="alert-tag">{$_("common.error_tag")}</span>
       <span>{debugMsg}</span>
     </section>
   {/if}
 
   <section class="card">
     <header class="card-head">
-      <span class="card-tag">[ hint ]</span>
-      <span class="card-meta">where to look</span>
+      <span class="card-tag">{$_("emulator.hint.tag")}</span>
+      <span class="card-meta">{$_("emulator.hint.subtitle")}</span>
     </header>
     <p class="hint">{emu.hint}</p>
   </section>
 
   <section class="card">
     <header class="card-head">
-      <span class="card-tag">[ paths ]</span>
-      <span class="card-meta">source &rarr; destination</span>
+      <span class="card-tag">{$_("emulator.paths.tag")}</span>
+      <span class="card-meta">{$_("emulator.paths.subtitle")}</span>
     </header>
 
     <div class="field">
-      <label class="field-label" for="source-path">source / live save dir</label>
+      <label class="field-label" for="source-path">{$_("emulator.paths.source_label")}</label>
       <div class="field-row">
         <input
           id="source-path"
           type="text"
           class="field-input"
           bind:value={sourceDraft}
-          placeholder="C:\path\to\emulator\saves"
+          placeholder={$_("emulator.paths.placeholder_source")}
           disabled={!emu.enabled}
         />
         <button class="btn btn-thin" onclick={() => pickFolder("source")} disabled={!emu.enabled}>
-          [ browse ]
+          {$_("emulator.paths.browse_btn")}
         </button>
         <button
           class="btn btn-thin btn-detect"
           onclick={() => detectPaths(emu)}
           disabled={!emu.enabled || detecting}
         >
-          {detecting ? "…" : "[ detect ]"}
+          {detecting ? "…" : $_("emulator.paths.detect_btn")}
         </button>
       </div>
 
       {#if detectDone || detecting}
         <div class="detect-panel">
           {#if detecting}
-            <span class="detect-status">// scanning disks…</span>
+            <span class="detect-status">{$_("emulator.paths.detect_status_scanning")}</span>
           {:else if detectCandidates.length === 0}
-            <span class="detect-status">// nothing found</span>
+            <span class="detect-status">{$_("emulator.paths.detect_status_none")}</span>
           {:else}
-            <span class="detect-status">// {detectCandidates.length} candidate{detectCandidates.length > 1 ? "s" : ""} — click to apply:</span>
+            <span class="detect-status">
+              {detectCandidates.length === 1
+                ? $_("emulator.paths.detect_status_found_singular", { values: { n: detectCandidates.length } })
+                : $_("emulator.paths.detect_status_found_plural", { values: { n: detectCandidates.length } })}
+            </span>
             {#each detectCandidates as c (c.path)}
               <button class="detect-item" onclick={() => useDetected(c.path)}>
                 <span class="detect-label">{c.label}</span>
@@ -592,7 +600,7 @@
     </div>
 
     <div class="field">
-      <span class="field-label">destination kind</span>
+      <span class="field-label">{$_("emulator.paths.dest_kind_label")}</span>
       <div class="kind-toggle">
         <button
           type="button"
@@ -601,7 +609,7 @@
           onclick={() => (destKindDraft = "local")}
           disabled={!emu.enabled}
         >
-          [ local ]
+          {$_("emulator.paths.kind_local")}
         </button>
         <button
           type="button"
@@ -610,14 +618,14 @@
           onclick={() => (destKindDraft = "rclone")}
           disabled={!emu.enabled}
         >
-          [ rclone ]
+          {$_("emulator.paths.kind_rclone")}
         </button>
       </div>
     </div>
 
     {#if destKindDraft === "rclone"}
       <div class="field">
-        <label class="field-label" for="dest-remote">rclone remote</label>
+        <label class="field-label" for="dest-remote">{$_("emulator.paths.remote_label")}</label>
         <div class="field-row">
           <select
             id="dest-remote"
@@ -625,7 +633,7 @@
             bind:value={destRemoteDraft}
             disabled={!emu.enabled}
           >
-            <option value="" disabled>// selecione…</option>
+            <option value="" disabled>{$_("emulator.paths.remote_select_placeholder")}</option>
             {#each availableRemotes as r (r)}
               <option value={r}>{r}</option>
             {/each}
@@ -635,44 +643,52 @@
             onclick={() => goto("/remotes")}
             disabled={!emu.enabled}
           >
-            [ manage ]
+            {$_("emulator.paths.manage_btn")}
           </button>
         </div>
         {#if remotesErr}
           <p class="hint-line err">! {remotesErr}</p>
         {:else if availableRemotes.length === 0}
-          <p class="hint-line">// nenhum remote — crie um em [ manage ]</p>
+          <p class="hint-line">{$_("emulator.paths.remote_none_hint")}</p>
         {/if}
       </div>
 
       <div class="field">
-        <label class="field-label" for="dest-path">path no remote (bucket/prefix)</label>
+        <label class="field-label" for="dest-path">{$_("emulator.paths.dest_remote_path_label")}</label>
         <div class="field-row">
           <input
             id="dest-path"
             type="text"
             class="field-input"
             bind:value={destDraft}
-            placeholder="meu-bucket/save-sync"
+            placeholder={$_("emulator.paths.placeholder_dest_remote")}
             disabled={!emu.enabled}
           />
         </div>
-        <p class="hint-line">// será gravado em {destRemoteDraft || "<remote>"}:{destDraft || "<path>"}/{emu.id}/</p>
+        <p class="hint-line">
+          {$_("emulator.paths.dest_remote_path_preview", {
+            values: {
+              remote: destRemoteDraft || "<remote>",
+              path: destDraft || "<path>",
+              id: emu.id,
+            },
+          })}
+        </p>
       </div>
     {:else}
       <div class="field">
-        <label class="field-label" for="dest-path">destination / mirror dir</label>
+        <label class="field-label" for="dest-path">{$_("emulator.paths.dest_local_label")}</label>
         <div class="field-row">
           <input
             id="dest-path"
             type="text"
             class="field-input"
             bind:value={destDraft}
-            placeholder="C:\path\to\backup"
+            placeholder={$_("emulator.paths.placeholder_dest_local")}
             disabled={!emu.enabled}
           />
           <button class="btn btn-thin" onclick={() => pickFolder("dest")} disabled={!emu.enabled}>
-            [ browse ]
+            {$_("emulator.paths.browse_btn")}
           </button>
         </div>
       </div>
@@ -684,56 +700,56 @@
         onclick={() => savePaths(emu)}
         disabled={!emu.enabled || savingPaths || !pathDirty(emu)}
       >
-        {savingPaths ? "saving..." : pathDirty(emu) ? "[ commit paths ]" : "[ saved ]"}
+        {savingPaths ? $_("common.saving") + "..." : pathDirty(emu) ? $_("emulator.paths.commit_btn") : $_("emulator.paths.saved_btn")}
       </button>
     </div>
   </section>
 
   <section class="card">
     <header class="card-head">
-      <span class="card-tag">[ status ]</span>
-      <span class="card-meta">last operation</span>
+      <span class="card-tag">{$_("emulator.status.tag")}</span>
+      <span class="card-meta">{$_("emulator.status.subtitle")}</span>
     </header>
 
     {#if emu.id === "eden"}
       <div class="meta-row">
-        <span class="meta-key">profile uuid</span>
+        <span class="meta-key">{$_("emulator.status.profile_uuid")}</span>
         <span class="meta-val uuid-val" class:dim={!edenUuid}>
-          {edenUuid ?? (emu.source_path ? "// not detected" : "// no source path")}
+          {edenUuid ?? (emu.source_path ? $_("emulator.status.uuid_not_detected") : $_("emulator.status.uuid_no_source"))}
         </span>
       </div>
     {/if}
 
     <div class="meta-row">
-      <span class="meta-key">last_sync</span>
+      <span class="meta-key">{$_("emulator.status.last_sync")}</span>
       <span class="meta-val" class:dim={!emu.last_sync}>
-        {emu.last_sync ?? "never"}
+        {emu.last_sync ?? $_("common.never")}
       </span>
     </div>
 
     {#if emu.last_error}
       <div class="meta-row error">
-        <span class="meta-key">last_error</span>
-        <span class="meta-val err">{emu.last_error}</span>
+        <span class="meta-key">{$_("emulator.status.last_error")}</span>
+        <span class="meta-val err">{tErr(emu.last_error)}</span>
       </div>
     {/if}
   </section>
 
   <section class="card">
     <header class="card-head">
-      <span class="card-tag">[ proc-watch ]</span>
-      <span class="card-meta">sync on emulator close</span>
+      <span class="card-tag">{$_("emulator.proc_watch.tag")}</span>
+      <span class="card-meta">{$_("emulator.proc_watch.subtitle")}</span>
     </header>
 
     <div class="field">
-      <label class="field-label" for="proc-name">process name</label>
+      <label class="field-label" for="proc-name">{$_("emulator.proc_watch.process_label")}</label>
       <div class="field-row">
         <input
           id="proc-name"
           type="text"
           class="field-input"
           bind:value={procNameDraft}
-          placeholder="ex: pcsx2-qt  /  eden.exe  /  org.eden.android"
+          placeholder={$_("emulator.proc_watch.process_placeholder")}
           disabled={!emu.enabled}
         />
         <button
@@ -741,7 +757,7 @@
           onclick={() => saveProcName(emu)}
           disabled={!emu.enabled || savingProcName || !procNameDirty(emu)}
         >
-          {savingProcName ? "saving..." : procNameDirty(emu) ? "[ commit ]" : "[ saved ]"}
+          {savingProcName ? $_("common.saving") + "..." : procNameDirty(emu) ? $_("emulator.proc_watch.commit_btn") : $_("emulator.proc_watch.saved_btn")}
         </button>
       </div>
     </div>
@@ -753,40 +769,44 @@
         onclick={() => toggleProcWatch(emu)}
         disabled={!emu.enabled}
       >
-        {emu.proc_watching ? "[ halt proc-watch ]" : "[ engage proc-watch ]"}
+        {emu.proc_watching ? $_("emulator.proc_watch.halt_btn") : $_("emulator.proc_watch.engage_btn")}
       </button>
       <span class="proc-status" class:active={emu.proc_watching}>
-        {emu.proc_watching ? "// monitoring — syncs when process exits" : "// idle"}
+        {emu.proc_watching ? $_("emulator.proc_watch.monitoring_msg") : $_("emulator.proc_watch.idle_msg")}
       </span>
     </div>
   </section>
 
   <section class="card" class:has-conflicts={conflicts.length > 0}>
     <header class="card-head">
-      <span class="card-tag" class:warn={conflicts.length > 0}>[ conflicts ]</span>
+      <span class="card-tag" class:warn={conflicts.length > 0}>{$_("emulator.conflicts.tag")}</span>
       <span class="card-meta">
         {#if conflictsLoading}
-          // scanning…
+          {$_("emulator.conflicts.scanning")}
         {:else if conflicts.length === 0}
-          // none
+          {$_("common.none")}
         {:else}
-          {conflicts.length} unresolved
+          {$_("emulator.conflicts.count_unresolved", { values: { n: conflicts.length } })}
         {/if}
       </span>
       <button
         class="hist-refresh"
         onclick={() => loadConflicts(emu.id)}
         disabled={conflictsLoading || !emu.dest_path}
-        aria-label="refresh"
+        aria-label={$_("common.refresh")}
       >↻</button>
     </header>
 
     {#if conflictsErr}
       <p class="conflict-err">! {conflictsErr}</p>
     {:else if !conflictsLoading && conflicts.length === 0}
-      <p class="conflict-empty">// nenhum conflito — sync preservou ambas as versões via .conflict1 quando preciso, e nada está pendente</p>
+      <p class="conflict-empty">{$_("emulator.conflicts.none")}</p>
     {:else if conflicts.length > 0}
-      <p class="conflict-hint">// {conflicts.length === 1 ? "1 arquivo tem" : `${conflicts.length} arquivos têm`} versão divergente preservada. resolver remove o `.conflict{conflicts[0]?.conflict_num}` correspondente.</p>
+      <p class="conflict-hint">
+        {conflicts.length === 1
+          ? $_("emulator.conflicts.hint_singular", { values: { n: conflicts[0]?.conflict_num ?? 1 } })
+          : $_("emulator.conflicts.hint_plural", { values: { count: conflicts.length, n: conflicts[0]?.conflict_num ?? 1 } })}
+      </p>
       <ul class="conflict-list">
         {#each conflicts as c (c.conflict_path)}
           {@const newer = newerSide(c)}
@@ -797,14 +817,14 @@
             </div>
             <div class="conflict-sides">
               <div class="conflict-side" class:newer={newer === "current"}>
-                <span class="side-label">current</span>
+                <span class="side-label">{$_("emulator.conflicts.side_current")}</span>
                 <span class="side-detail">{fmtBytes(c.current_size)} · {fmtMTime(c.current_modified)}</span>
-                {#if newer === "current"}<span class="newer-tag">newer</span>{/if}
+                {#if newer === "current"}<span class="newer-tag">{$_("emulator.conflicts.tag_newer")}</span>{/if}
               </div>
               <div class="conflict-side" class:newer={newer === "conflict"}>
-                <span class="side-label">.conflict</span>
+                <span class="side-label">{$_("emulator.conflicts.side_conflict")}</span>
                 <span class="side-detail">{fmtBytes(c.conflict_size)} · {fmtMTime(c.conflict_modified)}</span>
-                {#if newer === "conflict"}<span class="newer-tag">newer</span>{/if}
+                {#if newer === "conflict"}<span class="newer-tag">{$_("emulator.conflicts.tag_newer")}</span>{/if}
               </div>
             </div>
             <div class="conflict-actions">
@@ -812,20 +832,20 @@
                 class="btn btn-thin"
                 onclick={() => resolveConflict(emu.id, c, "keep_current")}
                 disabled={resolvingPath !== null}
-                title="apaga o .conflict — fica só o current"
-              >[ keep current ]</button>
+                title={$_("emulator.conflicts.tooltip_keep_current")}
+              >{$_("emulator.conflicts.btn_keep_current")}</button>
               <button
                 class="btn btn-thin"
                 onclick={() => resolveConflict(emu.id, c, "use_conflict")}
                 disabled={resolvingPath !== null}
-                title="sobrescreve current com o .conflict"
-              >[ use conflict ]</button>
+                title={$_("emulator.conflicts.tooltip_use_conflict")}
+              >{$_("emulator.conflicts.btn_use_conflict")}</button>
               <button
                 class="btn btn-thin"
                 onclick={() => resolveConflict(emu.id, c, "keep_both")}
                 disabled={resolvingPath !== null}
-                title="renomeia .conflict pra nome permanente, mantém os dois"
-              >[ keep both ]</button>
+                title={$_("emulator.conflicts.tooltip_keep_both")}
+              >{$_("emulator.conflicts.btn_keep_both")}</button>
             </div>
           </li>
         {/each}
@@ -835,15 +855,15 @@
 
   <section class="card">
     <header class="card-head">
-      <span class="card-tag">[ history ]</span>
-      <span class="card-meta">snapshot policy</span>
+      <span class="card-tag">{$_("emulator.history.tag")}</span>
+      <span class="card-meta">{$_("emulator.history.subtitle")}</span>
     </header>
 
     {#if !historyDraft}
-      <p class="hint-line">// loading…</p>
+      <p class="hint-line">// {$_("common.loading")}…</p>
     {:else}
       <div class="hist-row">
-        <span class="field-label">backup</span>
+        <span class="field-label">{$_("emulator.history.backup_label")}</span>
         <div class="kind-toggle">
           <button
             type="button"
@@ -851,7 +871,7 @@
             class:active={historyDraft.enabled}
             onclick={() => (historyDraft!.enabled = true)}
           >
-            [ on ]
+            {$_("home.btn_on")}
           </button>
           <button
             type="button"
@@ -859,13 +879,13 @@
             class:active={!historyDraft.enabled}
             onclick={() => (historyDraft!.enabled = false)}
           >
-            [ off ]
+            {$_("home.btn_off")}
           </button>
         </div>
       </div>
 
       <div class="hist-row">
-        <span class="field-label">modes</span>
+        <span class="field-label">{$_("emulator.history.mode_label")}</span>
         <div class="check-stack">
           <label
             class="check-row"
@@ -881,8 +901,8 @@
               {historyDraft.incremental_enabled ? "[■]" : "[ ]"}
             </span>
             <div class="check-text">
-              <span class="check-label">incremental</span>
-              <span class="check-hint">só arquivos sobrescritos vão pra delta/</span>
+              <span class="check-label">{$_("emulator.history.mode_incremental_label")}</span>
+              <span class="check-hint">{$_("emulator.history.mode_incremental_hint")}</span>
             </div>
           </label>
           <label
@@ -899,29 +919,29 @@
               {historyDraft.full_enabled ? "[■]" : "[ ]"}
             </span>
             <div class="check-text">
-              <span class="check-label">full</span>
-              <span class="check-hint">estado completo copiado pra full/ antes de cada sync</span>
+              <span class="check-label">{$_("emulator.history.mode_full_label")}</span>
+              <span class="check-hint">{$_("emulator.history.mode_full_hint")}</span>
             </div>
           </label>
         </div>
       </div>
 
       {#if !allowsIncremental}
-        <p class="hint-line">// {emu.id} usa arquivo binário como unidade — incremental degeneraria em full, então só full disponível</p>
+        <p class="hint-line">{$_("emulator.history.hint_file_based", { values: { id: emu.id } })}</p>
       {:else if historyDraft.incremental_enabled && historyDraft.full_enabled}
-        <p class="hint-line">// ambos ligados: cada sync produz .history/&lt;ts&gt;/full/ + .history/&lt;ts&gt;/delta/ (storage 2x)</p>
+        <p class="hint-line">{$_("emulator.history.hint_both")}</p>
       {:else if historyDraft.incremental_enabled}
-        <p class="hint-line">// incremental: barato em storage, fácil reverter um save específico</p>
+        <p class="hint-line">{$_("emulator.history.hint_incremental")}</p>
       {:else if historyDraft.full_enabled}
-        <p class="hint-line">// full: pesado em storage, mas cada snapshot é estado completo</p>
+        <p class="hint-line">{$_("emulator.history.hint_full")}</p>
       {/if}
       {#if historyInvalid()}
-        <p class="hint-line err">! selecione pelo menos um modo enquanto history estiver ativo</p>
+        <p class="hint-line err">{$_("emulator.history.hint_invalid")}</p>
       {/if}
 
       <div class="field-grid">
         <div class="field">
-          <label class="field-label" for="ret-days">retention (days)</label>
+          <label class="field-label" for="ret-days">{$_("emulator.history.retention_days_label")}</label>
           <input
             id="ret-days"
             type="number"
@@ -933,7 +953,7 @@
           />
         </div>
         <div class="field">
-          <label class="field-label" for="ret-mb">retention (max MB)</label>
+          <label class="field-label" for="ret-mb">{$_("emulator.history.retention_mb_label")}</label>
           <input
             id="ret-mb"
             type="number"
@@ -946,15 +966,15 @@
       </div>
 
       <div class="meta-row">
-        <span class="meta-key">bisync state</span>
+        <span class="meta-key">{$_("emulator.history.bisync_state_label")}</span>
         <span class="meta-val" class:dim={!historyDraft.bisync_initialized}>
-          {historyDraft.bisync_initialized ? "initialized" : "// resync on next run"}
+          {historyDraft.bisync_initialized ? $_("emulator.history.bisync_initialized") : $_("emulator.history.bisync_needs_resync")}
         </span>
       </div>
 
       {#if historyErr}
         <div class="meta-row error">
-          <span class="meta-key">last_error</span>
+          <span class="meta-key">{$_("emulator.status.last_error")}</span>
           <span class="meta-val err">{historyErr}</span>
         </div>
       {/if}
@@ -973,16 +993,16 @@
           class="btn btn-thin"
           onclick={() => pruneNow(emu.id)}
           disabled={pruning || !emu.dest_path}
-          title="aplica retention agora — sync também faz isso automaticamente"
+          title={$_("emulator.history.prune_tooltip")}
         >
-          {pruning ? "// pruning…" : "[ prune now ]"}
+          {pruning ? $_("emulator.history.pruning_btn") : $_("emulator.history.prune_now_btn")}
         </button>
         <button
           class="btn"
           onclick={saveHistory}
           disabled={savingHistory || !historyDirty() || historyInvalid()}
         >
-          {savingHistory ? "saving..." : historyDirty() ? "[ commit history ]" : "[ saved ]"}
+          {savingHistory ? $_("common.saving") + "..." : historyDirty() ? $_("emulator.history.commit_btn") : $_("emulator.history.saved_btn")}
         </button>
       </div>
     {/if}
@@ -991,25 +1011,25 @@
   {#if emu.id === "eden"}
     <section class="card">
       <header class="card-head">
-        <span class="card-tag">[ titledb ]</span>
-        <span class="card-meta">switch title-id ↔ name</span>
+        <span class="card-tag">{$_("emulator.titledb.tag")}</span>
+        <span class="card-meta">{$_("emulator.titledb.subtitle")}</span>
       </header>
 
       <div class="meta-row">
-        <span class="meta-key">entries</span>
+        <span class="meta-key">{$_("emulator.titledb.entries")}</span>
         <span class="meta-val" class:dim={!titleDb || titleDb.count === 0}>
-          {titleDb ? titleDb.count.toLocaleString("pt-BR") : "…"}
+          {titleDb ? titleDb.count.toLocaleString() : "…"}
         </span>
       </div>
       <div class="meta-row">
-        <span class="meta-key">last update</span>
+        <span class="meta-key">{$_("emulator.titledb.last_update")}</span>
         <span class="meta-val" class:dim={!titleDb?.last_update}>
-          {titleDb?.last_update ?? "never"}
+          {titleDb?.last_update ?? $_("common.never")}
         </span>
       </div>
       {#if titleDbErr}
         <div class="meta-row error">
-          <span class="meta-key">last_error</span>
+          <span class="meta-key">{$_("emulator.status.last_error")}</span>
           <span class="meta-val err">{titleDbErr}</span>
         </div>
       {/if}
@@ -1020,7 +1040,7 @@
           onclick={refreshTitleDb}
           disabled={titleDb?.refreshing}
         >
-          {titleDb?.refreshing ? "// downloading…" : "[ atualizar via blawar ]"}
+          {titleDb?.refreshing ? $_("emulator.titledb.downloading") : $_("emulator.titledb.refresh_btn")}
         </button>
       </div>
     </section>
@@ -1029,25 +1049,25 @@
   {#if emu.id === "pcsx2"}
     <section class="card">
       <header class="card-head">
-        <span class="card-tag">[ ps2db ]</span>
-        <span class="card-meta">ps2 serial ↔ name</span>
+        <span class="card-tag">{$_("emulator.ps2db.tag")}</span>
+        <span class="card-meta">{$_("emulator.ps2db.subtitle")}</span>
       </header>
 
       <div class="meta-row">
-        <span class="meta-key">entries</span>
+        <span class="meta-key">{$_("emulator.titledb.entries")}</span>
         <span class="meta-val" class:dim={!ps2Db || ps2Db.count === 0}>
-          {ps2Db ? ps2Db.count.toLocaleString("pt-BR") : "…"}
+          {ps2Db ? ps2Db.count.toLocaleString() : "…"}
         </span>
       </div>
       <div class="meta-row">
-        <span class="meta-key">last update</span>
+        <span class="meta-key">{$_("emulator.titledb.last_update")}</span>
         <span class="meta-val" class:dim={!ps2Db?.last_update}>
-          {ps2Db?.last_update ?? "never"}
+          {ps2Db?.last_update ?? $_("common.never")}
         </span>
       </div>
       {#if ps2DbErr}
         <div class="meta-row error">
-          <span class="meta-key">last_error</span>
+          <span class="meta-key">{$_("emulator.status.last_error")}</span>
           <span class="meta-val err">{ps2DbErr}</span>
         </div>
       {/if}
@@ -1058,7 +1078,7 @@
           onclick={refreshPs2Db}
           disabled={ps2Db?.refreshing}
         >
-          {ps2Db?.refreshing ? "// downloading…" : "[ atualizar via pcsx2 gameindex ]"}
+          {ps2Db?.refreshing ? $_("emulator.titledb.downloading") : $_("emulator.ps2db.refresh_btn")}
         </button>
       </div>
     </section>

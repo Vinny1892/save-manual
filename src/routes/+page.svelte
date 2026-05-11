@@ -2,23 +2,35 @@
   import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
   import { emulators, type EmulatorView } from "$lib/store";
+  import { _ } from "svelte-i18n";
+  import { tErr } from "$lib/i18n";
 
   let debugMsg = $state("");
 
-  // smoke-test do rclone (temporário)
   let rcloneTestResult = $state<string>("");
+  let rcloneTestOk = $state(false);
   let rcloneTesting = $state(false);
 
   async function testRclone() {
     rcloneTesting = true;
     rcloneTestResult = "";
+    rcloneTestOk = false;
     try {
       const v = await invoke<{ version?: string; os?: string; arch?: string; goVersion?: string }>(
         "rclone_version"
       );
-      rcloneTestResult = `OK :: rclone ${v.version ?? "?"} on ${v.os ?? "?"}/${v.arch ?? "?"} (${v.goVersion ?? "?"})`;
+      rcloneTestResult = $_("home.smoke_ok", {
+        values: {
+          version: v.version ?? "?",
+          os: v.os ?? "?",
+          arch: v.arch ?? "?",
+          goVersion: v.goVersion ?? "?",
+        },
+      });
+      rcloneTestOk = true;
     } catch (e) {
-      rcloneTestResult = `ERR :: ${String(e)}`;
+      rcloneTestResult = $_("home.smoke_err", { values: { message: tErr(e) } });
+      rcloneTestOk = false;
     } finally {
       rcloneTesting = false;
     }
@@ -33,7 +45,7 @@
     try {
       await invoke("set_enabled", { id: emu.id, enabled: !emu.enabled });
     } catch (err) {
-      debugMsg = `set_enabled ${emu.id}: ` + String(err);
+      debugMsg = `set_enabled ${emu.id}: ` + tErr(err);
     }
   }
 
@@ -45,37 +57,37 @@
 <section class="banner">
   <h1>SAVE&middot;SYNC</h1>
   <p class="banner-sub">
-    ┄┄ emulator state replication terminal ┄┄ <span class="cursor">█</span>
+    {$_("home.subtitle")} <span class="cursor">█</span>
   </p>
 </section>
 
 {#if debugMsg}
   <section class="alert">
-    <span class="alert-tag">! TRACE</span>
+    <span class="alert-tag">{$_("common.error_tag")}</span>
     <span>{debugMsg}</span>
   </section>
 {/if}
 
 <section class="smoke">
   <button class="smoke-btn" onclick={testRclone} disabled={rcloneTesting}>
-    {rcloneTesting ? "// testing rclone..." : "[ smoke test :: rclone ]"}
+    {rcloneTesting ? $_("home.smoke_testing") : $_("home.smoke_test_btn")}
   </button>
   <button class="smoke-btn" onclick={() => goto('/remotes')}>
-    [ manage remotes ]
+    {$_("home.manage_remotes_btn")}
   </button>
   {#if rcloneTestResult}
-    <span class="smoke-out" class:ok={rcloneTestResult.startsWith("OK")} class:err={rcloneTestResult.startsWith("ERR")}>
+    <span class="smoke-out" class:ok={rcloneTestOk} class:err={!rcloneTestOk}>
       {rcloneTestResult}
     </span>
   {/if}
 </section>
 
 <div class="list-head">
-  <span class="col-idx">no.</span>
-  <span class="col-name">unit</span>
-  <span class="col-state">state</span>
-  <span class="col-sync">last_sync</span>
-  <span class="col-power">power</span>
+  <span class="col-idx">{$_("home.col_no")}</span>
+  <span class="col-name">{$_("home.col_unit")}</span>
+  <span class="col-state">{$_("home.col_state")}</span>
+  <span class="col-sync">{$_("home.col_last_sync")}</span>
+  <span class="col-power">{$_("home.col_power")}</span>
 </div>
 
 <ul class="rows">
@@ -96,23 +108,23 @@
       </div>
       <span class="state-tag">
         {#if !emu.enabled}
-          // disabled
+          {$_("home.state_disabled")}
         {:else if emu.watching}
-          // watching
+          {$_("home.state_watching")}
         {:else}
-          // idle
+          {$_("home.state_idle")}
         {/if}
       </span>
       <span class="sync-val" class:dim={!emu.last_sync}>
-        {emu.last_sync ?? "never"}
+        {emu.last_sync ?? $_("common.never")}
       </span>
       <button
         class="power-btn"
         class:on={emu.enabled}
         onclick={(e) => toggleEnabled(e, emu)}
-        aria-label={emu.enabled ? "desativar" : "ativar"}
+        aria-label={emu.enabled ? $_("home.aria_deactivate") : $_("home.aria_activate")}
       >
-        {emu.enabled ? "[ on ]" : "[ off ]"}
+        {emu.enabled ? $_("home.btn_on") : $_("home.btn_off")}
       </button>
     </li>
   {/each}

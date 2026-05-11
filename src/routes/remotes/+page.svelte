@@ -2,78 +2,34 @@
   import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import { _ } from "svelte-i18n";
+  import { tErr } from "$lib/i18n";
 
   /**
    * Provider presets follow rclone's S3 backend matrix
    * (https://rclone.org/s3/). For "AWS", endpoint stays empty so rclone
    * derives it from the region. Everyone else needs an explicit endpoint.
+   *
+   * `labelKey` / `hintKey` resolve through i18n at render time so the form
+   * follows the user's locale.
    */
   type Preset = {
     id: string;
-    label: string;
+    labelKey: string;
     provider: string;
-    endpoint: string; // template — may contain placeholders the user fills in
+    endpoint: string;
     region: string;
-    hint: string;
+    hintKey: string;
   };
 
   const PRESETS: Preset[] = [
-    {
-      id: "aws",
-      label: "Amazon S3",
-      provider: "AWS",
-      endpoint: "",
-      region: "us-east-1",
-      hint: "endpoint deixado em branco — rclone deriva da região",
-    },
-    {
-      id: "r2",
-      label: "Cloudflare R2",
-      provider: "Cloudflare",
-      endpoint: "https://<account-id>.r2.cloudflarestorage.com",
-      region: "auto",
-      hint: "substitua <account-id> pelo seu (dashboard R2)",
-    },
-    {
-      id: "b2",
-      label: "Backblaze B2 (S3 API)",
-      provider: "Other",
-      endpoint: "https://s3.us-west-002.backblazeb2.com",
-      region: "us-west-002",
-      hint: "ajuste o sufixo da região (us-west-001/002, eu-central-001…)",
-    },
-    {
-      id: "wasabi",
-      label: "Wasabi",
-      provider: "Wasabi",
-      endpoint: "https://s3.us-east-1.wasabisys.com",
-      region: "us-east-1",
-      hint: "ajuste a região no endpoint e no campo region",
-    },
-    {
-      id: "minio",
-      label: "MinIO / self-hosted",
-      provider: "Minio",
-      endpoint: "http://localhost:9000",
-      region: "us-east-1",
-      hint: "qualquer servidor S3-compatível auto-hospedado",
-    },
-    {
-      id: "do",
-      label: "DigitalOcean Spaces",
-      provider: "DigitalOcean",
-      endpoint: "https://nyc3.digitaloceanspaces.com",
-      region: "us-east-1",
-      hint: "troque nyc3 pela sua região (sfo3, ams3, sgp1…)",
-    },
-    {
-      id: "other",
-      label: "Outro / S3-compatível",
-      provider: "Other",
-      endpoint: "",
-      region: "us-east-1",
-      hint: "preencha endpoint manualmente",
-    },
+    { id: "aws",    labelKey: "remotes.presets.aws_label",    hintKey: "remotes.presets.aws_hint",    provider: "AWS",          endpoint: "",                                                          region: "us-east-1" },
+    { id: "r2",     labelKey: "remotes.presets.r2_label",     hintKey: "remotes.presets.r2_hint",     provider: "Cloudflare",   endpoint: "https://<account-id>.r2.cloudflarestorage.com",             region: "auto" },
+    { id: "b2",     labelKey: "remotes.presets.b2_label",     hintKey: "remotes.presets.b2_hint",     provider: "Other",        endpoint: "https://s3.us-west-002.backblazeb2.com",                    region: "us-west-002" },
+    { id: "wasabi", labelKey: "remotes.presets.wasabi_label", hintKey: "remotes.presets.wasabi_hint", provider: "Wasabi",       endpoint: "https://s3.us-east-1.wasabisys.com",                        region: "us-east-1" },
+    { id: "minio",  labelKey: "remotes.presets.minio_label",  hintKey: "remotes.presets.minio_hint",  provider: "Minio",        endpoint: "http://localhost:9000",                                     region: "us-east-1" },
+    { id: "do",     labelKey: "remotes.presets.do_label",     hintKey: "remotes.presets.do_hint",     provider: "DigitalOcean", endpoint: "https://nyc3.digitaloceanspaces.com",                       region: "us-east-1" },
+    { id: "other",  labelKey: "remotes.presets.other_label",  hintKey: "remotes.presets.other_hint",  provider: "Other",        endpoint: "",                                                          region: "us-east-1" },
   ];
 
   let remotes = $state<string[]>([]);
@@ -111,7 +67,7 @@
     try {
       remotes = await invoke<string[]>("rclone_list_remotes");
     } catch (e) {
-      listErr = String(e);
+      listErr = tErr(e);
     } finally {
       loading = false;
     }
@@ -125,11 +81,11 @@
     createErr = "";
     createMsg = "";
     if (!nameValid(name)) {
-      createErr = "nome inválido (use letras, números, _ ou -)";
+      createErr = $_("remotes.name_invalid");
       return;
     }
     if (!accessKeyId || !secretAccessKey) {
-      createErr = "access_key_id e secret_access_key são obrigatórios";
+      createErr = $_("remotes.creds_required");
       return;
     }
     creating = true;
@@ -144,7 +100,7 @@
           region: region || null,
         },
       });
-      createMsg = `// remote '${name}' criado`;
+      createMsg = $_("remotes.create_ok", { values: { name } });
       // wipe sensitive fields once they've made it into rclone (it stores
       // the secret obscured — we never want plaintext lingering in memory)
       accessKeyId = "";
@@ -152,7 +108,7 @@
       name = "";
       await loadRemotes();
     } catch (e) {
-      createErr = String(e);
+      createErr = tErr(e);
     } finally {
       creating = false;
     }
@@ -164,9 +120,9 @@
     testMsg = null;
     try {
       await invoke("rclone_test_remote", { name: clean, path: "" });
-      testMsg = { name: clean, ok: true, text: "// connection ok" };
+      testMsg = { name: clean, ok: true, text: $_("remotes.test_ok") };
     } catch (e) {
-      testMsg = { name: clean, ok: false, text: String(e) };
+      testMsg = { name: clean, ok: false, text: tErr(e) };
     } finally {
       testing = null;
     }
@@ -174,14 +130,14 @@
 
   async function deleteRemote(remoteName: string) {
     const clean = remoteName.replace(/:$/, "");
-    if (!confirm(`Deletar remote '${clean}'?`)) return;
+    if (!confirm($_("remotes.confirm_delete", { values: { name: clean } }))) return;
     deleting = clean;
     try {
       await invoke("rclone_delete_remote", { name: clean });
       if (testMsg?.name === clean) testMsg = null;
       await loadRemotes();
     } catch (e) {
-      listErr = `delete: ${String(e)}`;
+      listErr = tErr(e);
     } finally {
       deleting = null;
     }
@@ -195,32 +151,32 @@
 </script>
 
 <section class="topnav">
-  <button class="back" onclick={back} aria-label="voltar">
-    <span class="back-arrow">◀</span> back to index
+  <button class="back" onclick={back} aria-label={$_("common.back")}>
+    <span class="back-arrow">◀</span> {$_("common.back")}
   </button>
 </section>
 
 <section class="head">
   <div class="head-row">
     <span class="led led-amber"></span>
-    <h1>remotes</h1>
-    <span class="state-tag">// rclone-managed destinations</span>
+    <h1>{$_("remotes.title")}</h1>
+    <span class="state-tag">{$_("remotes.subtitle")}</span>
   </div>
-  <p class="head-id">module :: rclone / s3-compatible</p>
+  <p class="head-id">{$_("remotes.module")}</p>
 </section>
 
 <section class="card">
   <header class="card-head">
-    <span class="card-tag">[ active ]</span>
-    <span class="card-meta">{remotes.length} configured</span>
+    <span class="card-tag">{$_("remotes.active_tag")}</span>
+    <span class="card-meta">{$_("remotes.active_count", { values: { n: remotes.length } })}</span>
   </header>
 
   {#if loading}
-    <p class="empty-msg">// loading…</p>
+    <p class="empty-msg">// {$_("common.loading")}…</p>
   {:else if listErr}
     <p class="error-line">! {listErr}</p>
   {:else if remotes.length === 0}
-    <p class="empty-msg">// nenhum remote configurado — crie um abaixo</p>
+    <p class="empty-msg">{$_("remotes.empty")}</p>
   {:else}
     <ul class="remote-list">
       {#each remotes as r (r)}
@@ -233,14 +189,14 @@
               onclick={() => testRemote(r)}
               disabled={testing === clean}
             >
-              {testing === clean ? "…" : "[ test ]"}
+              {testing === clean ? "…" : $_("remotes.test_btn")}
             </button>
             <button
               class="btn btn-thin btn-danger"
               onclick={() => deleteRemote(r)}
               disabled={deleting === clean}
             >
-              {deleting === clean ? "…" : "[ delete ]"}
+              {deleting === clean ? "…" : $_("remotes.delete_btn")}
             </button>
           </div>
         </li>
@@ -256,22 +212,22 @@
 
 <section class="card">
   <header class="card-head">
-    <span class="card-tag">[ new s3 ]</span>
-    <span class="card-meta">create rclone remote</span>
+    <span class="card-tag">{$_("remotes.new_tag")}</span>
+    <span class="card-meta">{$_("remotes.new_subtitle")}</span>
   </header>
 
   <div class="field">
-    <label class="field-label" for="preset">provider preset</label>
+    <label class="field-label" for="preset">{$_("remotes.field_preset")}</label>
     <select id="preset" class="field-input" bind:value={presetId}>
       {#each PRESETS as p (p.id)}
-        <option value={p.id}>{p.label}</option>
+        <option value={p.id}>{$_(p.labelKey)}</option>
       {/each}
     </select>
-    <p class="hint-line">// {preset.hint}</p>
+    <p class="hint-line">// {$_(preset.hintKey)}</p>
   </div>
 
   <div class="field">
-    <label class="field-label" for="rname">remote name</label>
+    <label class="field-label" for="rname">{$_("remotes.field_name")}</label>
     <input
       id="rname"
       type="text"
@@ -284,7 +240,7 @@
   </div>
 
   <div class="field">
-    <label class="field-label" for="ak">access_key_id</label>
+    <label class="field-label" for="ak">{$_("remotes.field_access_key")}</label>
     <input
       id="ak"
       type="text"
@@ -296,7 +252,7 @@
   </div>
 
   <div class="field">
-    <label class="field-label" for="sk">secret_access_key</label>
+    <label class="field-label" for="sk">{$_("remotes.field_secret_key")}</label>
     <input
       id="sk"
       type="password"
@@ -309,19 +265,19 @@
 
   <div class="field-grid">
     <div class="field">
-      <label class="field-label" for="endp">endpoint</label>
+      <label class="field-label" for="endp">{$_("remotes.field_endpoint")}</label>
       <input
         id="endp"
         type="text"
         class="field-input mono"
         bind:value={endpoint}
-        placeholder={preset.id === "aws" ? "(deixe em branco)" : "https://…"}
+        placeholder={preset.id === "aws" ? $_("remotes.endpoint_aws_placeholder") : "https://…"}
         autocomplete="off"
         spellcheck="false"
       />
     </div>
     <div class="field">
-      <label class="field-label" for="reg">region</label>
+      <label class="field-label" for="reg">{$_("remotes.field_region")}</label>
       <input
         id="reg"
         type="text"
@@ -335,7 +291,7 @@
 
   {#if createErr}
     <div class="alert">
-      <span class="alert-tag">! ERR</span>
+      <span class="alert-tag">{$_("common.error_tag")}</span>
       <span>{createErr}</span>
     </div>
   {/if}
@@ -346,7 +302,7 @@
 
   <div class="field-actions">
     <button class="btn" onclick={createRemote} disabled={creating}>
-      {creating ? "// criando…" : "[ create remote ]"}
+      {creating ? $_("remotes.creating") : $_("remotes.create_btn")}
     </button>
   </div>
 </section>
