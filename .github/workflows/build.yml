@@ -72,7 +72,8 @@ jobs:
             wget \
             file \
             libssl-dev \
-            libxdo-dev
+            libxdo-dev \
+            xdg-utils
 
       - uses: Swatinem/rust-cache@v2
         with:
