@@ -1,0 +1,169 @@
+name: build
+
+# Every push to master produces a numbered prerelease ("build-<run>") with
+# installers + portable bundles for Windows and AppImages for Linux x64/arm64.
+# Manually triggerable via the Actions tab.
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write # creating releases + uploading assets
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows-x64
+            librclone_dir: x86_64-pc-windows-gnu
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: linux-x64
+            librclone_dir: x86_64-unknown-linux-gnu
+          # GitHub-hosted ARM runners (free for public repos since Jan 2025).
+          - platform: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            label: linux-arm64
+            librclone_dir: aarch64-unknown-linux-gnu
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      # The librclone build script wants gcc + go. Ubuntu has both by
+      # default; Windows runners ship MSYS2 but mingw isn't on PATH.
+      - name: add mingw to PATH (windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          echo "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: install linux system deps
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libsoup-3.0-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libxdo-dev
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Cache the produced librclone (~50 MB). Rebuild only when the
+      # build script itself changes.
+      - name: cache librclone
+        id: cache-librclone
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/lib
+          key: librclone-v1-${{ matrix.target }}-${{ hashFiles('scripts/build-librclone.sh') }}
+
+      - name: build librclone
+        if: steps.cache-librclone.outputs.cache-hit != 'true'
+        shell: bash
+        run: bash scripts/build-librclone.sh
+
+      - name: npm ci
+        run: npm ci
+
+      - name: tauri build
+        shell: bash
+        run: npx tauri build --target ${{ matrix.target }}
+
+      # Tauri produces installers (msi/nsis on win, appimage/deb on linux).
+      # For Windows we also want a portable zip — just the .exe + librclone.dll,
+      # runnable without an installer (WebView2 ships with Win11 by default).
+      - name: package windows portable
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $portable = "save-sync-portable-windows-x64"
+          New-Item -ItemType Directory -Path $portable -Force | Out-Null
+          Copy-Item src-tauri/target/${{ matrix.target }}/release/save-sync.exe $portable/
+          Copy-Item src-tauri/target/${{ matrix.target }}/release/librclone.dll $portable/
+          Compress-Archive -Path "$portable/*" -DestinationPath "$portable.zip" -Force
+
+      # Gather just the artifacts we want shipped (drop intermediate build
+      # output, rpms, etc). Globs are nullglob-safe so missing patterns
+      # don't fail the job.
+      - name: collect artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          shopt -s nullglob
+          for f in \
+            src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi \
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe \
+            src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage \
+            src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb \
+            save-sync-portable-*.zip
+          do
+            cp "$f" dist/
+          done
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: save-sync-${{ matrix.label }}
+          path: dist/*
+          if-no-files-found: warn
+
+  # One release per push. Tag = build-<run_number>, kept indefinitely so
+  # users can roll back to a specific build. Use `prerelease: true` so the
+  # "Latest release" pointer stays on whatever manual tag the user blesses.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: flatten
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( \
+            -name '*.msi' -o -name '*-setup.exe' -o -name '*.AppImage' \
+            -o -name '*.deb' -o -name '*.zip' \
+          \) -exec cp {} dist/ \;
+          ls -la dist/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "build #${{ github.run_number }} (${{ github.sha }})"
+          prerelease: true
+          generate_release_notes: true
+          files: dist/*
+          fail_on_unmatched_files: false

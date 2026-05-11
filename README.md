@@ -335,6 +335,35 @@ gatilho do local (sync now / watcher / proc-watch).
   pra evitar conflito artificial). Confirmação inline antes de
   sobrescrever — sem dialog modal por enquanto.
 
+### CI / releases
+
+Workflow em `.github/workflows/build.yml` roda em todo push pro `master` (e via dispatch manual). Matrix de 3 plataformas em paralelo:
+
+| Plataforma | Runner | Bundles |
+|---|---|---|
+| Windows x64 | `windows-latest` | MSI · NSIS (`-setup.exe`) · portable (`.zip` com `.exe` + `librclone.dll`) |
+| Linux x64 | `ubuntu-22.04` | AppImage · .deb |
+| Linux ARM64 | `ubuntu-22.04-arm` | AppImage · .deb |
+
+Cada job:
+1. Checkout + setup Node 20 + Rust stable + Go 1.22
+2. **Cache** do `src-tauri/lib/` (output do `build-librclone.sh`, ~50 MB) — só rebuilda se o script muda
+3. **Cache** do cargo target via `Swatinem/rust-cache@v2`
+4. **Cache** do `node_modules` via `setup-node@v4` (chave = `package-lock.json`)
+5. Roda `bash scripts/build-librclone.sh` (idêntico nas 3 plataformas — script detecta o triple via `uname`)
+6. `npm ci` → `npx tauri build --target <triple>`
+7. Windows: empacota portable em ZIP
+8. Coleta artefatos em `dist/` e faz upload
+
+Job `release` final (após matrix completa):
+- Baixa todos os artefatos
+- Cria/atualiza release `build-<run_number>` no GitHub (prerelease, tag = `build-N`, name = `build #N (sha)`)
+- Auto-gera release notes via comparação de tags
+
+Trigger manual via `Actions > build > Run workflow`. Tempo médio: ~10 min na primeira run, ~3-5 min com caches.
+
+**Portable Windows**: zip contém só `save-sync.exe` + `librclone.dll`. Roda em qualquer Windows 10/11 com WebView2 (vem por padrão no Win 11). Sem instalação, sem entradas no menu Iniciar, removível com `rm -rf`.
+
 ### Suporte a controle
 
 Navegação por gamepad via [Gamepad API](https://developer.mozilla.org/en-US/docs/Web/API/Gamepad_API) (nativa do WebView2 — sem dep extra). Auto-detecta qualquer controle no layout padrão: Xbox One/Series, DualShock/DualSense, 8BitDo Pro 2, Switch Pro (em XInput mode).
@@ -484,6 +513,7 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 - [x] **PCSX2 duplicação automática**: arquivos `.conflict1` em emus file-based são renomeados pra `<base>-conflict1.<ext>` no fim do sync — PCSX2 enxerga ambos como memcards válidos
 - [x] **Async sync com progress**: `do_sync` roda em `spawn_blocking`, reporter paralelo polla `core/stats` a cada 500ms e emite event `sync-progress`. UI tem banner sticky no rodapé com bytes/speed/ETA
 - [x] **Suporte a controle**: Gamepad API nativa do WebView2, mapping padrão Xbox (A=select / B=back / DPad+stick=nav espacial 2D / L1+R1=pageUp/Down / Start=reservado). Indicador ⎚ no header quando conectado
+- [x] **CI**: GitHub Actions builda em todo push pro master — Windows (MSI + NSIS + portable ZIP), Linux x64 e ARM64 (AppImage + .deb). Cria release `build-<run>` automaticamente
 - [x] Testes unitários (81 testes em backend/db/lib/rclone — `cargo test --lib`)
 - [ ] OAuth flow (Drive, Dropbox, OneDrive) via `config/create` + callback HTTP
 - [ ] Linux build + AppImage via CI
