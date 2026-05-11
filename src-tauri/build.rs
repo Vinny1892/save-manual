@@ -1,8 +1,12 @@
 use std::path::PathBuf;
 
 fn main() {
-    tauri_build::build();
+    // Stage librclone FIRST so the `_bundle_lib/` glob in tauri.conf.json
+    // resources has a file to match by the time tauri_build validates the
+    // config. Otherwise tauri_build errors with "path not found or didn't
+    // match any files".
     stage_librclone();
+    tauri_build::build();
 }
 
 /// Copy the librclone artifact (built by scripts/build-librclone.{ps1,sh})
@@ -54,4 +58,14 @@ fn stage_librclone() {
             let _ = std::fs::copy(&lib_path, &dest);
         }
     }
+
+    // Also stage at a fixed, target-agnostic location that
+    // `tauri.conf.json::bundle.resources` can reference verbatim. Without
+    // this, Tauri's bundler doesn't include `librclone.{so,dll}` in
+    // .deb/AppImage/MSI/NSIS — the dev/portable layout works only because
+    // the file ends up next to the binary in target/<profile>/.
+    let bundle_lib = manifest_dir.join("_bundle_lib");
+    std::fs::create_dir_all(&bundle_lib).ok();
+    let bundle_dest = bundle_lib.join(lib_filename);
+    let _ = std::fs::copy(&lib_path, &bundle_dest);
 }

@@ -14,6 +14,7 @@
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use libloading::{Library, Symbol};
@@ -51,17 +52,55 @@ fn lib_filename() -> &'static str {
     }
 }
 
-fn load() -> Result<Bindings, String> {
-    // libloading respects OS rules: bare name is looked up next to the exe,
-    // in OS lib paths, and (on Windows) in the current dir. build.rs copies
-    // the lib next to the exe at build time.
+/// Builds the ordered list of paths we try when looking up librclone.
+/// Each install scenario lands the file somewhere different:
+///
+///   - dev / Windows portable / AUR /opt   → next to the exe
+///   - Tauri Windows installer (NSIS/MSI)  → <exe-dir>/resources/
+///   - Tauri Linux .deb                    → /usr/lib/<bundle-id>/
+///   - Tauri AppImage                      → <mount>/usr/lib/<bundle-id>/
+///
+/// First success wins. We start with the bare name (handles LD_LIBRARY_PATH
+/// + system dirs + current dir on Windows) so users can override via env.
+fn candidate_paths() -> Vec<PathBuf> {
     let name = lib_filename();
-    let lib = unsafe { Library::new(name) }
-        .map_err(|e| format!("dlopen {}: {}", name, e))?;
-    Ok(Bindings {
-        lib,
-        initialized: Mutex::new(false),
-    })
+    let mut out: Vec<PathBuf> = vec![PathBuf::from(name)];
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            // Side-by-side (dev, Windows portable, AUR /opt install)
+            out.push(dir.join(name));
+            // Tauri Windows installer resource dir
+            out.push(dir.join("resources").join(name));
+            // Tauri Linux/AppImage resource dir — by bundle identifier
+            out.push(dir.join("..").join("lib").join("com.savesync.app").join(name));
+            // Alternate Linux layout some packagers use
+            out.push(dir.join("..").join("lib").join("save-sync").join(name));
+        }
+    }
+
+    out
+}
+
+fn load() -> Result<Bindings, String> {
+    let name = lib_filename();
+    let mut errors: Vec<String> = Vec::new();
+    for path in candidate_paths() {
+        match unsafe { Library::new(&path) } {
+            Ok(lib) => {
+                return Ok(Bindings {
+                    lib,
+                    initialized: Mutex::new(false),
+                });
+            }
+            Err(e) => errors.push(format!("{}: {}", path.display(), e)),
+        }
+    }
+    Err(format!(
+        "dlopen {} failed at all candidate paths:\n  - {}",
+        name,
+        errors.join("\n  - ")
+    ))
 }
 
 fn bindings() -> Result<&'static Bindings, String> {
