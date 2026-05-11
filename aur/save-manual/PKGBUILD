@@ -1,0 +1,86 @@
+# Maintainer: Vinicius Espindola <vinnyaoe@gmail.com>
+#
+# Variante from-source: clona o repo numa tag, builda librclone via Go,
+# builda a app via Tauri/Cargo, instala binário + librclone.so manualmente
+# em /opt (lado a lado — libloading procura pelo nome direto, sem rpath).
+#
+# Pra usuários Arch puristas. Toma ~10 min (compilação Rust pesada).
+# Quem quiser velocidade: use `save-manual-bin`.
+
+pkgname=save-manual
+_appname=save-sync
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Replicação de save data entre instalações de emuladores"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Vinny1892/save-manual"
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'glibc')
+optdepends=('libayatana-appindicator: tray icon support')
+makedepends=('git' 'rust' 'nodejs' 'npm' 'go' 'gcc' 'patchelf' 'libsoup3' 'librsvg')
+provides=("$_appname")
+conflicts=("$_appname" 'save-manual-bin')
+
+source=("$pkgname-$pkgver::git+$url.git#tag=v$pkgver")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  # Pre-cache dependências node — falha de rede no build() é frustrante.
+  npm ci
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+
+  # librclone (Go + cgo) — script detecta o triple via uname.
+  bash scripts/build-librclone.sh
+
+  # Frontend (SvelteKit) + binário Rust + Tauri. Skip o bundle: a gente
+  # instala manualmente em package() porque o sidecar librclone.so não
+  # é incluído automaticamente nos bundles deb/AppImage do Tauri.
+  cd src-tauri
+  cargo build --release --locked
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+
+  # Binário + librclone juntos em /opt — libloading busca pelo basename,
+  # então precisam estar no mesmo dir. /opt evita conflito com qualquer
+  # libsave-sync.so global hipotético.
+  install -dm755 "$pkgdir/opt/$_appname"
+  install -m755 "src-tauri/target/release/$_appname" \
+    "$pkgdir/opt/$_appname/$_appname"
+  install -m755 "src-tauri/target/release/librclone.so" \
+    "$pkgdir/opt/$_appname/librclone.so"
+
+  # Wrapper em $PATH
+  install -dm755 "$pkgdir/usr/bin"
+  ln -s "/opt/$_appname/$_appname" "$pkgdir/usr/bin/$_appname"
+
+  # .desktop pra integração com lançador
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/$_appname.desktop" <<EOF
+[Desktop Entry]
+Name=save-sync
+Comment=$pkgdesc
+Exec=/usr/bin/$_appname
+Icon=$_appname
+Terminal=false
+Type=Application
+Categories=Utility;Game;
+EOF
+
+  # Ícones (vários tamanhos pra hicolor theme)
+  for size in 32 128 256; do
+    local src="src-tauri/icons/${size}x${size}.png"
+    if [ -f "$src" ]; then
+      install -Dm644 "$src" \
+        "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/$_appname.png"
+    fi
+  done
+
+  # README + LICENSE
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$_appname/README.md"
+  [ -f LICENSE ] && install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$_appname/LICENSE"
+}

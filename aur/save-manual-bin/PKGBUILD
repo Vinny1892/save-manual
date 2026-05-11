@@ -1,0 +1,72 @@
+# Maintainer: Vinicius Espindola <vinnyaoe@gmail.com>
+#
+# Variante "-bin": instala o AppImage pré-buildado pelo CI do GitHub.
+# Single-file, self-contained, sem precisar de Go/Rust/Node no host.
+#
+# Atualizar a cada release:
+#   - bump `pkgver` e `_release` pro número da release nova
+#   - `updpkgsums` (regenera sha256sums)
+#   - `makepkg --printsrcinfo > .SRCINFO`
+
+pkgname=save-manual-bin
+_appname=save-sync
+pkgver=0.1.0
+_release=build-1   # numero da release no GitHub (build-N) ou tag fixa (v0.1.0)
+pkgrel=1
+pkgdesc="Replicação de save data entre instalações de emuladores (binário pré-built)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Vinny1892/save-manual"
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'glibc')
+optdepends=('libayatana-appindicator: tray icon support')
+provides=("$_appname")
+conflicts=("$_appname" 'save-manual')
+options=(!strip)  # AppImage internal layout — não strippar
+
+source_x86_64=("$_appname-$pkgver-x86_64.AppImage::$url/releases/download/$_release/${_appname}_${pkgver}_amd64.AppImage")
+source_aarch64=("$_appname-$pkgver-aarch64.AppImage::$url/releases/download/$_release/${_appname}_${pkgver}_aarch64.AppImage")
+
+# Substitua por hashes reais via `updpkgsums` antes de publicar.
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+  cd "$srcdir"
+  local appimage="$_appname-$pkgver-$CARCH.AppImage"
+  chmod +x "$appimage"
+
+  # AppImage fica em /opt — single-file, sem extração. Roda via FUSE.
+  install -dm755 "$pkgdir/opt/$pkgname"
+  install -m755 "$appimage" "$pkgdir/opt/$pkgname/$_appname.AppImage"
+
+  # Wrapper em /usr/bin pra integrar com $PATH
+  install -dm755 "$pkgdir/usr/bin"
+  cat > "$pkgdir/usr/bin/$_appname" <<EOF
+#!/bin/sh
+exec /opt/$pkgname/$_appname.AppImage "\$@"
+EOF
+  chmod +x "$pkgdir/usr/bin/$_appname"
+
+  # Extrai .desktop + ícone pra integração com lançadores. Falha
+  # silenciosa se a estrutura interna mudar — o app continua rodando
+  # via CLI, só não aparece no menu.
+  if "./$appimage" --appimage-extract '*.desktop' >/dev/null 2>&1; then
+    if [ -d squashfs-root ]; then
+      local desktop
+      desktop=$(find squashfs-root -maxdepth 2 -name '*.desktop' | head -1)
+      if [ -n "$desktop" ]; then
+        install -Dm644 "$desktop" "$pkgdir/usr/share/applications/$_appname.desktop"
+        sed -i "s|^Exec=.*|Exec=/usr/bin/$_appname|" \
+          "$pkgdir/usr/share/applications/$_appname.desktop"
+      fi
+      # Pega o maior ícone disponível
+      local icon
+      icon=$(find squashfs-root -maxdepth 4 -name "$_appname.png" -printf '%s %p\n' \
+        | sort -rn | head -1 | cut -d' ' -f2-)
+      if [ -n "$icon" ]; then
+        install -Dm644 "$icon" "$pkgdir/usr/share/icons/hicolor/256x256/apps/$_appname.png"
+      fi
+      rm -rf squashfs-root
+    fi
+  fi
+}
