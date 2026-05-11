@@ -41,6 +41,12 @@
   "footer": {
     "eof": "eof / ready"
   },
+  "sync_banner": {
+    "syncing": "// syncing {id}",
+    "eta": "ETA {n}s",
+    "speed": "@ {bytes}/s",
+    "starting": "// preparing {id} sync…"
+  },
   "home": {
     "subtitle": "┄┄ emulator state replication terminal ┄┄",
     "smoke_test_btn": "[ smoke test :: rclone ]",

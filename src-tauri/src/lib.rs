@@ -157,7 +157,7 @@ async fn sync_now(
         (std::path::PathBuf::from(&emu.source_path), emu, history)
     };
 
-    let outcome = do_sync(&emu, &source, &history);
+    let outcome = do_sync_async(emu, source, history, app.clone()).await;
     if matches!(&outcome, Ok(SyncOutcome { initial: true })) {
         let s = state.lock().await;
         let _ = db::mark_bisync_initialized(&s.conn, &id);
@@ -213,7 +213,7 @@ async fn start_watch(
                         let s = app_state.lock().await;
                         db::get_history_settings(&s.conn, &id_clone).unwrap_or_else(|_| HistorySettings::defaults_for(&id_clone))
                     };
-                    let outcome = do_sync(&emu, &source, &history);
+                    let outcome = do_sync_async(emu.clone(), source.clone(), history, app_clone.clone()).await;
                     if matches!(&outcome, Ok(SyncOutcome { initial: true })) {
                         let s = app_state.lock().await;
                         let _ = db::mark_bisync_initialized(&s.conn, &id_clone);
@@ -292,7 +292,7 @@ async fn start_proc_watch(
                             db::get_history_settings(&s.conn, &id_clone)
                                 .unwrap_or_else(|_| HistorySettings::defaults_for(&id_clone))
                         };
-                        let outcome = do_sync(&emu, &source, &history);
+                        let outcome = do_sync_async(emu.clone(), source.clone(), history, app_clone.clone()).await;
                         if matches!(&outcome, Ok(SyncOutcome { initial: true })) {
                             let s = app_state.lock().await;
                             let _ = db::mark_bisync_initialized(&s.conn, &id_clone);
@@ -882,6 +882,56 @@ fn prune_history(
     })
 }
 
+/// For file-based emulators (pcsx2 today), conflicting memcards stay as
+/// `<file>.conflict1` siblings of the winning version. PCSX2 wouldn't
+/// pick those up as separate memcards (it only scans `.ps2`), so we
+/// rename them to `<base>-conflict<N>.<ext>` automatically — the user
+/// then sees both as selectable memcards in the emulator UI.
+///
+/// Runs on both live (cloud/local backup) and source (local PC). No-op
+/// when emulator is directory-based (eden/rpcs3) — those use the
+/// per-file conflict resolution UI instead.
+fn auto_duplicate_file_conflicts(
+    emu: &Emulator,
+    source: &std::path::Path,
+    backend: &Backend,
+) -> Result<(), String> {
+    if db::supports_incremental_history(&emu.id) {
+        return Ok(());
+    }
+
+    let live = backend.live_fs();
+    let (fs, remote) = rclone::split_root(&live);
+    let entries = rclone::list_recursive(&fs, &remote)?;
+    let source_root = source
+        .to_string_lossy()
+        .trim_end_matches(['/', '\\'])
+        .to_string();
+
+    for entry in entries {
+        if entry.is_dir {
+            continue;
+        }
+        let renamed = rename_keep_both_path(&entry.path);
+        if renamed == entry.path {
+            continue; // not a `.conflictN` marker
+        }
+
+        let live_src = format!("{live}/{}", entry.path);
+        let live_dst = format!("{live}/{renamed}");
+        let source_src = format!("{source_root}/{}", entry.path);
+        let source_dst = format!("{source_root}/{renamed}");
+
+        // Best-effort — failure on one side shouldn't block the rest.
+        // Most common cause: the source-side rename already happened on
+        // a previous tick (another device beat us to it).
+        let _ = rclone::move_file_at(&live_src, &live_dst);
+        let _ = rclone::move_file_at(&source_src, &source_dst);
+    }
+
+    Ok(())
+}
+
 /// Pairs each `<path>.conflict<n>` entry with its matching "current"
 /// entry from the same listing. Orphan conflict files (no matching
 /// current) are skipped — they shouldn't happen under normal bisync
@@ -1401,6 +1451,11 @@ fn do_sync(
         })?;
     }
 
+    // For file-based emulators (pcsx2), rename any `.conflictN` siblings
+    // produced by this run so the emulator sees them as standalone
+    // memcards. No-op for directory-based emulators.
+    let _ = auto_duplicate_file_conflicts(emu, source, &backend);
+
     // Best-effort retention enforcement. Errors here don't fail the sync
     // — old snapshots lingering is annoying, but a failed sync is worse.
     let _ = prune_history(&backend, history);
@@ -1455,6 +1510,69 @@ fn do_initial_bisync(
         })?;
     }
     Ok(())
+}
+
+/// Async wrapper around `do_sync` that:
+///   1. spawns a progress reporter task polling `core/stats` every 500ms
+///      and emitting `sync-progress` events with `{id, active, stats}`,
+///   2. runs the blocking `do_sync` in a `spawn_blocking` thread so the
+///      Tauri runtime stays responsive during long syncs,
+///   3. emits a final `sync-progress` with `active: false` so the UI
+///      banner clears.
+///
+/// Callers should prefer this over `do_sync` for any user-triggered
+/// (sync_now) or background-task (watcher/proc-watch) sync.
+async fn do_sync_async(
+    emu: Emulator,
+    source: std::path::PathBuf,
+    history: HistorySettings,
+    app: AppHandle,
+) -> Result<SyncOutcome, String> {
+    use tokio::time::{interval, Duration};
+
+    let id = emu.id.clone();
+
+    // Progress reporter — runs until we send on stop_tx.
+    let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
+    let progress_app = app.clone();
+    let progress_id = id.clone();
+    let progress_task = tokio::spawn(async move {
+        let mut tick = interval(Duration::from_millis(500));
+        // First tick fires immediately — skip so we don't emit before
+        // rclone has anything to report.
+        tick.tick().await;
+        loop {
+            tokio::select! {
+                _ = stop_rx.recv() => break,
+                _ = tick.tick() => {
+                    let stats = rclone::core_stats().unwrap_or(serde_json::Value::Null);
+                    let _ = progress_app.emit(
+                        "sync-progress",
+                        serde_json::json!({
+                            "id": progress_id,
+                            "active": true,
+                            "stats": stats,
+                        }),
+                    );
+                }
+            }
+        }
+    });
+
+    // Blocking bisync moved to a worker thread.
+    let outcome = tokio::task::spawn_blocking(move || do_sync(&emu, &source, &history))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Stop reporter, emit final inactive event so the UI clears the banner.
+    let _ = stop_tx.send(()).await;
+    let _ = progress_task.await;
+    let _ = app.emit(
+        "sync-progress",
+        serde_json::json!({ "id": id, "active": false }),
+    );
+
+    outcome
 }
 
 fn validate_config(emu: &Emulator) -> Result<(), String> {

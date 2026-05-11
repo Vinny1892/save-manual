@@ -41,6 +41,12 @@
   "footer": {
     "eof": "eof / listo"
   },
+  "sync_banner": {
+    "syncing": "// sincronizando {id}",
+    "eta": "ETA {n}s",
+    "speed": "@ {bytes}/s",
+    "starting": "// preparando sync de {id}…"
+  },
   "home": {
     "subtitle": "┄┄ terminal de replicación de partidas ┄┄",
     "smoke_test_btn": "[ prueba :: rclone ]",

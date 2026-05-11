@@ -488,3 +488,60 @@ html[data-tinted] ::-webkit-scrollbar-corner {
 html[data-tinted] {
   scrollbar-color: rgba(var(--game-tint), 0.6) rgba(var(--game-tint), 0.08);
 }
+
+/* ─── sync progress banner (sticky bottom) ────────────────────────────── */
+.sync-banner {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 1rem;
+  z-index: 100;
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  padding: 0.55rem 1rem;
+  background: var(--bg-elev, var(--bg-unit-1));
+  border: 1px solid var(--accent);
+  box-shadow: 0 0 12px rgba(255, 191, 0, 0.25);
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+  color: var(--text-bright);
+  font-variant-numeric: tabular-nums;
+  animation: sync-banner-in 0.18s ease-out;
+  max-width: calc(100% - 2rem);
+}
+
+@keyframes sync-banner-in {
+  from { opacity: 0; transform: translate(-50%, 0.6rem); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.sync-spinner {
+  color: var(--accent);
+  animation: spin 1.2s linear infinite;
+  display: inline-block;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.sync-id {
+  color: var(--accent);
+  font-family: "Major Mono Display", monospace;
+}
+
+.sync-bytes,
+.sync-speed,
+.sync-eta {
+  color: var(--text-soft);
+}
+
+@media (max-width: 540px) {
+  .sync-banner {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.4rem;
+    font-size: 0.7rem;
+  }
+}

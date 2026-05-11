@@ -311,10 +311,15 @@ gatilho do local (sync now / watcher / proc-watch).
 
 **Limitações da implementação atual:**
 
-- Sync é síncrono — calls de `sync/bisync` bloqueiam até completar. Pra saves
-  típicos (~MB) tudo bem; pra remotes lentos uma chamada async com
-  `core/stats` polling viria depois.
-- Sem progress bar — é all-or-nothing.
+- Sync via librclone é blocking por design — chamamos `do_sync` dentro de
+  `tokio::task::spawn_blocking` pra não travar o runtime, e um reporter
+  paralelo polla `core/stats` a cada 500ms emitindo o event
+  `sync-progress { id, active, stats }`. UI mostra um banner sticky no
+  rodapé com bytes transferidos / total / speed / ETA. Banner some no
+  primeiro event com `active: false` (emitido após `do_sync` retornar).
+- `core/stats` é global ao processo rclone — se duas syncs rodarem em
+  paralelo (raro, mas possível com múltiplos watchers ativos), o banner
+  mostra stats agregados.
 - Conflitos são resolvidos por `--conflict-resolve newer` (mtime mais recente
   ganha). O loser **NÃO é descartado** — `--conflict-loser num` preserva
   como `<arquivo>.conflict1`. UI surfaceia esses no card `[ conflicts ]`
@@ -425,6 +430,10 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 
 20. **Formato do timestamp tem hífens em vez de dois pontos**: `YYYY-MM-DDTHH-MM-SSZ`. Dois-pontos é caractere inválido pra nome de arquivo no Windows e cria atrito em ferramentas que escapam mal. `parse_snapshot_ts` reverte os hífens da parte HH-MM-SS pra dois-pontos antes de chamar o parser ISO8601 da chrono.
 
+21. **PCSX2 conflict = duplicação automática, eden/rpcs3 conflict = UI manual**: pra emus file-based (pcsx2), no fim do `do_sync` o `.conflict1` é renomeado pra `Mcd001-conflict1.ps2` automaticamente, em live + source, via `auto_duplicate_file_conflicts`. O emulador enxerga como memcard válido (extensão `.ps2` preservada). Pra emus dir-based (eden/rpcs3), o usuário resolve via card `[ conflicts ]` no detail do emulador. Critério: `db::supports_incremental_history(emu_id)` — file-based = !incremental.
+
+22. **Async sync via spawn_blocking + progress reporter**: `do_sync_async` envolve `do_sync` em `tokio::task::spawn_blocking` (librclone é blocking, não pode rodar no async runtime sem isso) e roda um task paralelo polling `core/stats` a cada 500ms. Quando `do_sync` retorna, o reporter recebe stop via mpsc, e um event final com `active: false` é emitido pra UI limpar o banner. Watchers (file watcher + proc-watch) também chamam `do_sync_async` pra ter o mesmo flow.
+
 ---
 
 ## Roadmap
@@ -446,6 +455,8 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 - [x] **Fase 3**: Conflict resolution via `--conflict-loser num` (loser preservado como `.conflict1`, card `[ conflicts ]` no emulator detail com 3 ações: keep_current / use_conflict / keep_both)
 - [x] **Fase 4**: Prune automático (retention_days + retention_max_mb enforced ao fim de cada sync; botão `[ prune now ]` manual disponível)
 - [x] **i18n**: pt-BR + en + es via `svelte-i18n`, toggle no header (BR/EN/ES), backend emite códigos (`save_not_found`, etc) que o frontend traduz
+- [x] **PCSX2 duplicação automática**: arquivos `.conflict1` em emus file-based são renomeados pra `<base>-conflict1.<ext>` no fim do sync — PCSX2 enxerga ambos como memcards válidos
+- [x] **Async sync com progress**: `do_sync` roda em `spawn_blocking`, reporter paralelo polla `core/stats` a cada 500ms e emite event `sync-progress`. UI tem banner sticky no rodapé com bytes/speed/ETA
 - [x] Testes unitários (81 testes em backend/db/lib/rclone — `cargo test --lib`)
 - [ ] Duplicação de memcard PCSX2 em vez de overwrite quando há conflito
 - [ ] Async sync com progress (core/stats)

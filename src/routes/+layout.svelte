@@ -19,6 +19,20 @@
   let { children } = $props();
   let now = $state(new Date());
 
+  interface SyncStats {
+    bytes?: number;
+    totalBytes?: number;
+    speed?: number;
+    eta?: number;
+    errors?: number;
+  }
+  interface SyncProgress {
+    id: string;
+    active: boolean;
+    stats?: SyncStats;
+  }
+  let activeSync = $state<SyncProgress | null>(null);
+
   onMount(async () => {
     applyStoredTheme();
     setInterval(() => (now = new Date()), 1000);
@@ -27,7 +41,18 @@
       hydrateFromList(list);
     } catch {}
     await listen<any>("emulator-changed", (e) => applyChanged(e.payload));
+    await listen<SyncProgress>("sync-progress", (e) => {
+      activeSync = e.payload.active ? e.payload : null;
+    });
   });
+
+  function fmtBytes(b: number | undefined): string {
+    if (b == null) return "—";
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
+    return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  }
 
   function fmtClock(d: Date) {
     // Clock format is intentionally locale-agnostic (24h hh:mm:ss) — that's
@@ -89,4 +114,28 @@
       <span class="foot-meta">{$_("footer.eof")}</span>
     </footer>
   </main>
+
+  {#if activeSync}
+    <div class="sync-banner" role="status" aria-live="polite">
+      <span class="sync-spinner">▣</span>
+      {#if activeSync.stats && activeSync.stats.totalBytes != null && activeSync.stats.totalBytes > 0}
+        <span class="sync-id">{$_("sync_banner.syncing", { values: { id: activeSync.id } })}</span>
+        <span class="sync-bytes">
+          {fmtBytes(activeSync.stats.bytes)} / {fmtBytes(activeSync.stats.totalBytes)}
+        </span>
+        {#if activeSync.stats.speed != null && activeSync.stats.speed > 0}
+          <span class="sync-speed">
+            {$_("sync_banner.speed", { values: { bytes: fmtBytes(activeSync.stats.speed) } })}
+          </span>
+        {/if}
+        {#if activeSync.stats.eta != null && activeSync.stats.eta > 0}
+          <span class="sync-eta">
+            {$_("sync_banner.eta", { values: { n: activeSync.stats.eta } })}
+          </span>
+        {/if}
+      {:else}
+        <span class="sync-id">{$_("sync_banner.starting", { values: { id: activeSync.id } })}</span>
+      {/if}
+    </div>
+  {/if}
 </div>

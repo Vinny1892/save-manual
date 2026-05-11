@@ -341,6 +341,12 @@ pub fn copy_path(src: &str, dst: &str, is_file: bool) -> Result<(), String> {
     }
 }
 
+/// Global transfer stats (bytes / totalBytes / speed / eta / errors / etc).
+/// Polled by the UI progress reporter while a bisync is in flight.
+pub fn core_stats() -> Result<serde_json::Value, String> {
+    rpc_json("core/stats", serde_json::json!({}))
+}
+
 /// Returns true if there is at least one entry at the given fs/path.
 /// Treats "directory not found" as empty (cloud-side prefixes don't exist
 /// until something is written into them).
