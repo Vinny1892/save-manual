@@ -41,16 +41,14 @@
   }
 
   async function toggleEnabled(e: Event, emu: EmulatorView) {
+    // Prevents the click from bubbling to the surrounding row link.
     e.stopPropagation();
+    e.preventDefault();
     try {
       await invoke("set_enabled", { id: emu.id, enabled: !emu.enabled });
     } catch (err) {
       debugMsg = `set_enabled ${emu.id}: ` + tErr(err);
     }
-  }
-
-  function openDetail(emu: EmulatorView) {
-    goto(`/emulator/${emu.id}`);
   }
 </script>
 
@@ -92,32 +90,30 @@
 
 <ul class="rows">
   {#each $emulators as emu, i (emu.id)}
-    <li
-      class="row"
-      class:disabled={!emu.enabled}
-      style="--i: {i}"
-      onclick={() => openDetail(emu)}
-      role="button"
-      tabindex="0"
-      onkeydown={(e) => e.key === "Enter" && openDetail(emu)}
-    >
-      <span class="idx">{fmtIndex(i)}</span>
-      <div class="name-block">
-        <span class="led" class:led-green={emu.watching} class:led-amber={emu.enabled && !emu.watching} class:led-off={!emu.enabled}></span>
-        <span class="name">{emu.name}</span>
-      </div>
-      <span class="state-tag">
-        {#if !emu.enabled}
-          {$_("home.state_disabled")}
-        {:else if emu.watching}
-          {$_("home.state_watching")}
-        {:else}
-          {$_("home.state_idle")}
-        {/if}
-      </span>
-      <span class="sync-val" class:dim={!emu.last_sync}>
-        {emu.last_sync ?? $_("common.never")}
-      </span>
+    <li class="row" class:disabled={!emu.enabled} style="--i: {i}">
+      <!-- `<a>` covers everything except the power button so the whole row
+           navigates via a real link (keyboard, screen-reader, middle-click
+           open-in-new-tab all work). The power button is a sibling, not
+           nested, because <a> can't contain <button>. -->
+      <a class="row-main" href="/emulator/{emu.id}">
+        <span class="idx">{fmtIndex(i)}</span>
+        <div class="name-block">
+          <span class="led" class:led-green={emu.watching} class:led-amber={emu.enabled && !emu.watching} class:led-off={!emu.enabled}></span>
+          <span class="name">{emu.name}</span>
+        </div>
+        <span class="state-tag">
+          {#if !emu.enabled}
+            {$_("home.state_disabled")}
+          {:else if emu.watching}
+            {$_("home.state_watching")}
+          {:else}
+            {$_("home.state_idle")}
+          {/if}
+        </span>
+        <span class="sync-val" class:dim={!emu.last_sync}>
+          {emu.last_sync ?? $_("common.never")}
+        </span>
+      </a>
       <button
         class="power-btn"
         class:on={emu.enabled}
@@ -240,14 +236,16 @@
   }
 
   .row {
+    /* Same 5-col template as .list-head so headers and cells line up.
+       `.row-main` (the navigation link) spans cols 1-4 via subgrid, so
+       its inner cells inherit the parent track sizes — no double math. */
     display: grid;
     grid-template-columns: 36px 1fr 110px 170px 80px;
     gap: 0.7rem;
     align-items: center;
-    padding: 0.7rem 0.85rem;
+    padding: 0 0.85rem;
     border: 1px solid transparent;
     border-bottom: 1px dashed var(--border);
-    cursor: pointer;
     transition: background 0.15s, border-color 0.15s;
     opacity: 0;
     transform: translateY(4px);
@@ -259,10 +257,28 @@
     to { opacity: 1; transform: translateY(0); }
   }
 
-  .row:hover {
+  .row:hover,
+  .row:has(.row-main:focus-visible) {
     background: var(--hover-tint);
     border-color: var(--border-strong);
     border-bottom-style: solid;
+  }
+
+  .row-main {
+    grid-column: 1 / 5;
+    display: grid;
+    grid-template-columns: subgrid;
+    gap: 0.7rem;
+    align-items: center;
+    padding: 0.7rem 0;
+    text-decoration: none;
+    color: inherit;
+    cursor: pointer;
+    min-width: 0;
+  }
+
+  .row-main:focus-visible {
+    outline: none;
   }
 
   .row.disabled .name,
@@ -330,7 +346,6 @@
     transition: all 0.14s;
     text-align: center;
     white-space: nowrap;
-    width: 100%;
   }
 
   .power-btn:hover {

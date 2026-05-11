@@ -15,7 +15,10 @@
 
   const NESTED_EMUS = new Set(["pcsx2"]);
 
-  const emuId = $derived($page.params.id);
+  // SvelteKit types params as string | undefined even for required slugs.
+  // In a route reached via `/emulator/<id>/saves`, `id` is always present,
+  // so a guarded fallback is safe and silences ts7053-style narrowing.
+  const emuId = $derived($page.params.id ?? "");
   const current = derived(
     [emulators, page],
     ([$emulators, $page]) => $emulators.find((e) => e.id === $page.params.id),
@@ -50,9 +53,11 @@
       (e) => !urls.has(e.raw_id) && !status.has(e.raw_id),
     );
     if (pending.length === 0) return;
-    const next = new Map([
+    // Tuple type assertion — without it TS widens `[string, "loading"]`
+    // into `(string | "loading")[]` and the `new Map(...)` ctor rejects it.
+    const next = new Map<string, "loading" | "ok" | "err">([
       ...status,
-      ...pending.map((e) => [e.raw_id, "loading" as const]),
+      ...pending.map((e) => [e.raw_id, "loading"] as [string, "loading"]),
     ]);
     if (isList) iconStatus = next;
     else gridStatus = next;

@@ -16,8 +16,10 @@
 
   const READ_ONLY_EMUS = new Set(["pcsx2"]);
 
-  const emuId  = $derived($page.params.id);
-  const rawId  = $derived($page.params.raw_id);
+  // SvelteKit types route params as `string | undefined` — they're always
+  // present in this route, fallback to "" silences the narrowing errors.
+  const emuId  = $derived($page.params.id ?? "");
+  const rawId  = $derived($page.params.raw_id ?? "");
   const readOnly = $derived(READ_ONLY_EMUS.has(emuId));
   const current = derived(
     [emulators, page],

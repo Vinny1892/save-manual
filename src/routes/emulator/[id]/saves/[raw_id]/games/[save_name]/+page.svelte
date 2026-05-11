@@ -12,9 +12,9 @@
     size_bytes: number;
   }
 
-  const emuId = $derived($page.params.id);
-  const rawId = $derived($page.params.raw_id);
-  const saveName = $derived(decodeURIComponent($page.params.save_name));
+  const emuId = $derived($page.params.id ?? "");
+  const rawId = $derived($page.params.raw_id ?? "");
+  const saveName = $derived(decodeURIComponent($page.params.save_name ?? ""));
   const current = derived(
     [emulators, page],
     ([$emulators, $page]) => $emulators.find((e) => e.id === $page.params.id),

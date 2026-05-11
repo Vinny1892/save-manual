@@ -43,9 +43,9 @@
       (s) => s.title && !urls.has(s.name) && !status.has(s.name),
     );
     if (pending.length === 0) return;
-    const next = new Map([
+    const next = new Map<string, "loading" | "ok" | "err">([
       ...status,
-      ...pending.map((s) => [s.name, "loading" as const]),
+      ...pending.map((s) => [s.name, "loading"] as [string, "loading"]),
     ]);
     if (isList) iconStatus = next;
     else gridStatus = next;

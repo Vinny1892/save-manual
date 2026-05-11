@@ -24,8 +24,10 @@ struct RcloneRPCResult {
     status: c_int,
 }
 
+// `RcloneFinalize` exists in the C API but we don't bind or call it —
+// rclone's cleanup is for graceful tear-down and is fine to skip; the OS
+// reclaims everything when the process exits.
 type FnInitialize = unsafe extern "C" fn();
-type FnFinalize = unsafe extern "C" fn();
 type FnRPC = unsafe extern "C" fn(*mut c_char, *mut c_char) -> RcloneRPCResult;
 type FnFreeString = unsafe extern "C" fn(*mut c_char);
 
