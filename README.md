@@ -335,6 +335,30 @@ gatilho do local (sync now / watcher / proc-watch).
   pra evitar conflito artificial). Confirmação inline antes de
   sobrescrever — sem dialog modal por enquanto.
 
+### Suporte a controle
+
+Navegação por gamepad via [Gamepad API](https://developer.mozilla.org/en-US/docs/Web/API/Gamepad_API) (nativa do WebView2 — sem dep extra). Auto-detecta qualquer controle no layout padrão: Xbox One/Series, DualShock/DualSense, 8BitDo Pro 2, Switch Pro (em XInput mode).
+
+Mapping:
+
+| Botão | Ação |
+|---|---|
+| A (south / Cross / B em Switch) | confirmar (clica focused) |
+| B (east / Circle / A em Switch) | voltar (history.back) |
+| DPad / Stick esquerdo | navegação 2D espacial entre focáveis |
+| L1 (LB / L) | page up (scroll) |
+| R1 (RB / R) | page down (scroll) |
+| Start | reservado (futura overlay de help) |
+
+Implementação em 2 arquivos:
+
+- `src/lib/gamepad.ts` — serviço de polling. requestAnimationFrame loop chama `navigator.getGamepads()`, detecta press transitions, aplica deadzone 0.5 nos sticks com histerese (drift de controle gasto não dispara), auto-repeat pros direcionais (400ms hold → 100ms tick).
+- `src/lib/gamepadNav.ts` — handler dos eventos semânticos. Direcionais usam `getBoundingClientRect` dos focáveis visíveis pra escolher o melhor candidato na direção pelo score `on_axis_dist + 2 * off_axis_dist` (mantém o "cursor" na mesma linha/coluna quando possível). `scrollIntoView({ block: "nearest" })` mantém o foco na viewport.
+
+Indicador ⎚ no header (entre relógio e locale toggle) acende em accent + pulse quando há controle conectado. Some quando desconecta.
+
+`:focus-visible` global no `app.css` aplica outline accent dashed em qualquer focável — mouse não dispara (só keyboard/gamepad), então não polui hover. Páginas podem sobrescrever com ring custom.
+
 ### i18n (3 idiomas)
 
 `svelte-i18n` carrega 3 dicionários em `src/lib/i18n/{pt-BR,en,es}.json`. Default = `pt-BR` (com fallback pra navegador via `navigator.language`), persiste em `localStorage["save-sync-locale"]`. Toggle no header cicla BR → EN → ES.
@@ -434,6 +458,8 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 
 22. **Async sync via spawn_blocking + progress reporter**: `do_sync_async` envolve `do_sync` em `tokio::task::spawn_blocking` (librclone é blocking, não pode rodar no async runtime sem isso) e roda um task paralelo polling `core/stats` a cada 500ms. Quando `do_sync` retorna, o reporter recebe stop via mpsc, e um event final com `active: false` é emitido pra UI limpar o banner. Watchers (file watcher + proc-watch) também chamam `do_sync_async` pra ter o mesmo flow.
 
+23. **Gamepad nav é espacial 2D, não tab-order**: tab-order linear (Tab/Shift-Tab clássico) quebra em grids — pressionar "right" no grid de saves daria o card embaixo, não o ao lado. O handler usa `getBoundingClientRect` dos focáveis visíveis e escolhe o vizinho mais próximo na direção via `on_axis_dist + 2 * off_axis_dist`. Resultado: DPad/stick andam pelo layout visual, não pela ordem do DOM. Custo: ~30 LOC + uma chamada de `querySelectorAll` por press. Inválidos pelo filtro de visibilidade (`offsetParent != null && rect > 0`) — elementos hidden via display:none não entram.
+
 ---
 
 ## Roadmap
@@ -457,6 +483,7 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 - [x] **i18n**: pt-BR + en + es via `svelte-i18n`, toggle no header (BR/EN/ES), backend emite códigos (`save_not_found`, etc) que o frontend traduz
 - [x] **PCSX2 duplicação automática**: arquivos `.conflict1` em emus file-based são renomeados pra `<base>-conflict1.<ext>` no fim do sync — PCSX2 enxerga ambos como memcards válidos
 - [x] **Async sync com progress**: `do_sync` roda em `spawn_blocking`, reporter paralelo polla `core/stats` a cada 500ms e emite event `sync-progress`. UI tem banner sticky no rodapé com bytes/speed/ETA
+- [x] **Suporte a controle**: Gamepad API nativa do WebView2, mapping padrão Xbox (A=select / B=back / DPad+stick=nav espacial 2D / L1+R1=pageUp/Down / Start=reservado). Indicador ⎚ no header quando conectado
 - [x] Testes unitários (81 testes em backend/db/lib/rclone — `cargo test --lib`)
 - [ ] OAuth flow (Drive, Dropbox, OneDrive) via `config/create` + callback HTTP
 - [ ] Linux build + AppImage via CI

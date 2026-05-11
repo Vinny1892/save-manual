@@ -13,6 +13,12 @@
     nextLocale,
     localeLabel,
   } from "$lib/i18n";
+  import {
+    startGamepadService,
+    setGamepadHandler,
+    gamepadConnected,
+  } from "$lib/gamepad";
+  import { handleGamepadEvent } from "$lib/gamepadNav";
 
   const win = getCurrentWindow();
 
@@ -33,17 +39,29 @@
   }
   let activeSync = $state<SyncProgress | null>(null);
 
-  onMount(async () => {
+  onMount(() => {
     applyStoredTheme();
-    setInterval(() => (now = new Date()), 1000);
-    try {
-      const list = await invoke<any[]>("list_emulators");
-      hydrateFromList(list);
-    } catch {}
-    await listen<any>("emulator-changed", (e) => applyChanged(e.payload));
-    await listen<SyncProgress>("sync-progress", (e) => {
+    const clockInterval = setInterval(() => (now = new Date()), 1000);
+
+    invoke<any[]>("list_emulators")
+      .then((list) => hydrateFromList(list))
+      .catch(() => {});
+
+    const unEmulator = listen<any>("emulator-changed", (e) => applyChanged(e.payload));
+    const unProgress = listen<SyncProgress>("sync-progress", (e) => {
       activeSync = e.payload.active ? e.payload : null;
     });
+
+    setGamepadHandler(handleGamepadEvent);
+    const stopGamepad = startGamepadService();
+
+    return () => {
+      clearInterval(clockInterval);
+      unEmulator.then((fn) => fn());
+      unProgress.then((fn) => fn());
+      stopGamepad();
+      setGamepadHandler(null);
+    };
   });
 
   function fmtBytes(b: number | undefined): string {
@@ -82,6 +100,13 @@
       </span>
       <span class="divider" data-tauri-drag-region>·</span>
       <span class="bar-meta clock" data-tauri-drag-region>{fmtClock(now)}</span>
+      {#if $gamepadConnected}
+        <span
+          class="bar-meta gamepad-indicator"
+          title={$_("header.gamepad_connected")}
+          aria-label={$_("header.gamepad_connected")}
+        >⎚</span>
+      {/if}
       <button
         class="locale-toggle"
         onclick={cycleLocale}

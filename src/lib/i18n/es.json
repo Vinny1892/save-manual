@@ -34,6 +34,7 @@
     "units_label": "{n} unidades",
     "toggle_theme": "alternar tema",
     "toggle_locale": "alternar idioma",
+    "gamepad_connected": "mando conectado — DPad/stick navega, A confirma, B vuelve",
     "minimize": "minimizar",
     "maximize": "maximizar",
     "close": "cerrar"

@@ -489,6 +489,30 @@ html[data-tinted] {
   scrollbar-color: rgba(var(--game-tint), 0.6) rgba(var(--game-tint), 0.08);
 }
 
+/* ─── gamepad support ─────────────────────────────────────────────────── */
+
+/* Global focus ring — visible whenever something gets keyboard/gamepad
+   focus. Mouse interactions don't trigger :focus-visible, so this only
+   shows up when navigating with keyboard or controller. Components can
+   override per-element when they want a tighter custom ring. */
+:focus-visible {
+  outline: 1px dashed var(--accent);
+  outline-offset: 2px;
+}
+
+.gamepad-indicator {
+  color: var(--accent);
+  font-size: 0.95rem;
+  cursor: default;
+  text-shadow: 0 0 4px rgba(255, 191, 0, 0.5);
+  animation: gamepad-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes gamepad-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+
 /* ─── sync progress banner (sticky bottom) ────────────────────────────── */
 .sync-banner {
   position: fixed;
