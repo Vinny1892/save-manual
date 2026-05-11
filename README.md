@@ -458,8 +458,6 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 - [x] **PCSX2 duplicação automática**: arquivos `.conflict1` em emus file-based são renomeados pra `<base>-conflict1.<ext>` no fim do sync — PCSX2 enxerga ambos como memcards válidos
 - [x] **Async sync com progress**: `do_sync` roda em `spawn_blocking`, reporter paralelo polla `core/stats` a cada 500ms e emite event `sync-progress`. UI tem banner sticky no rodapé com bytes/speed/ETA
 - [x] Testes unitários (81 testes em backend/db/lib/rclone — `cargo test --lib`)
-- [ ] Duplicação de memcard PCSX2 em vez de overwrite quando há conflito
-- [ ] Async sync com progress (core/stats)
 - [ ] OAuth flow (Drive, Dropbox, OneDrive) via `config/create` + callback HTTP
 - [ ] Linux build + AppImage via CI
 - [ ] Android port (REST nativo, sem rclone — limitação Android)
