@@ -640,6 +640,11 @@ async fn prune_history_now(
         let history = db::get_history_settings(&s.conn, &id)?;
         (emu, history)
     };
+    // Manual prune triggered before any sync would hit a non-existent
+    // `.history/` and spam rclone logs. Short-circuit with empty summary.
+    if !history.bisync_initialized {
+        return Ok(PruneSummary { deleted_count: 0, freed_bytes: 0 });
+    }
     let backend = Backend::for_emulator(&emu)?;
     prune_history(&backend, &history)
 }
@@ -988,12 +993,20 @@ async fn list_save_history(
     raw_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<SaveHistoryEntry>, String> {
-    let (source, emu) = {
+    let (source, emu, history) = {
         let s = state.lock().await;
         let emu = db::get(&s.conn, &id)?;
         validate_config(&emu)?;
-        (emu.source_path.clone(), emu)
+        let history = db::get_history_settings(&s.conn, &id)?;
+        (emu.source_path.clone(), emu, history)
     };
+
+    // Pre-sync there's no .history/ to walk. rclone logs noisy
+    // "directory not found" if we ask anyway; short-circuit avoids it
+    // and matches the "nothing to revert yet" UX.
+    if !history.bisync_initialized {
+        return Ok(Vec::new());
+    }
 
     let sub_path = saves::save_sub_path(&id, &source, &raw_id)
         .ok_or_else(|| "save_not_found".to_string())?;
@@ -1014,12 +1027,21 @@ async fn list_conflicts(
     id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<ConflictEntry>, String> {
-    let emu = {
+    let (emu, history) = {
         let s = state.lock().await;
         let emu = db::get(&s.conn, &id)?;
         validate_config(&emu)?;
-        emu
+        let history = db::get_history_settings(&s.conn, &id)?;
+        (emu, history)
     };
+
+    // Live root only exists after the first bisync — listing it earlier
+    // generates the rclone "directory not found" error in logs. Skip and
+    // return empty until then.
+    if !history.bisync_initialized {
+        return Ok(Vec::new());
+    }
+
     let backend = Backend::for_emulator(&emu)?;
     let live = backend.live_fs();
     let (fs, remote) = rclone::split_root(&live);

@@ -71,12 +71,12 @@
     "ops": {
       "tag": "[ ops ]",
       "subtitle": "panel de control",
-      "disable_unit": "[ unit off ]",
-      "enable_unit": "[ unit on ]",
-      "view_saves": "▤ saves",
-      "sync_now": "[ sync ]",
-      "halt_watcher": "[ watcher off ]",
-      "engage_watcher": "[ watcher on ]"
+      "disable_unit": "[ apagar ]",
+      "enable_unit": "[ encender ]",
+      "view_saves": "▤ ver saves",
+      "sync_now": "[ sincronizar ]",
+      "halt_watcher": "[ detener ]",
+      "engage_watcher": "[ observar ]"
     },
     "hint": {
       "tag": "[ pista ]",
@@ -124,8 +124,8 @@
       "process_placeholder": "ej.: pcsx2-qt  /  eden.exe  /  org.eden.android",
       "commit_btn": "[ ok ]",
       "saved_btn": "[ guardado ]",
-      "halt_btn": "[ proc-watch off ]",
-      "engage_btn": "[ proc-watch on ]",
+      "halt_btn": "[ desactivar ]",
+      "engage_btn": "[ activar ]",
       "monitoring_msg": "// monitoreando — sincroniza al salir el proceso",
       "idle_msg": "// inactivo"
     },
