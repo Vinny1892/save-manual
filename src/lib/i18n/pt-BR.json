@@ -71,12 +71,12 @@
     "ops": {
       "tag": "[ ops ]",
       "subtitle": "painel de controle",
-      "disable_unit": "[ desativar unidade ]",
-      "enable_unit": "[ ativar unidade ]",
-      "view_saves": "▤ ver saves",
-      "sync_now": "[ sincronizar agora ]",
-      "halt_watcher": "[ parar observador ]",
-      "engage_watcher": "[ ativar observador ]"
+      "disable_unit": "[ unit off ]",
+      "enable_unit": "[ unit on ]",
+      "view_saves": "▤ saves",
+      "sync_now": "[ sync ]",
+      "halt_watcher": "[ watcher off ]",
+      "engage_watcher": "[ watcher on ]"
     },
     "hint": {
       "tag": "[ dica ]",
@@ -102,7 +102,7 @@
       "detect_status_none": "// nada encontrado",
       "detect_status_found_singular": "// {n} candidato — clique para aplicar:",
       "detect_status_found_plural": "// {n} candidatos — clique para aplicar:",
-      "commit_btn": "[ confirmar caminhos ]",
+      "commit_btn": "[ salvar ]",
       "saved_btn": "[ salvo ]",
       "placeholder_source": "C:\\caminho\\pro\\emulador",
       "placeholder_dest_local": "C:\\caminho\\pro\\backup",
@@ -118,14 +118,14 @@
       "last_error": "último erro"
     },
     "proc_watch": {
-      "tag": "[ obs-proc ]",
+      "tag": "[ proc-watch ]",
       "subtitle": "sincroniza quando emulador fecha",
       "process_label": "nome do processo",
       "process_placeholder": "ex: pcsx2-qt  /  eden.exe  /  org.eden.android",
-      "commit_btn": "[ confirmar ]",
+      "commit_btn": "[ ok ]",
       "saved_btn": "[ salvo ]",
-      "halt_btn": "[ parar obs-proc ]",
-      "engage_btn": "[ ativar obs-proc ]",
+      "halt_btn": "[ proc-watch off ]",
+      "engage_btn": "[ proc-watch on ]",
       "monitoring_msg": "// monitorando — sincroniza quando o processo sai",
       "idle_msg": "// inativo"
     },
@@ -145,7 +145,7 @@
       "btn_keep_both": "[ manter ambos ]",
       "tooltip_keep_current": "apaga o .conflict — fica só o atual",
       "tooltip_use_conflict": "sobrescreve o atual com o .conflict",
-      "tooltip_keep_both": "renomeia .conflict pra nome permanente, mantém os dois"
+      "tooltip_keep_both": "renomeia .conflict para nome permanente, mantém os dois"
     },
     "history": {
       "tag": "[ histórico ]",
@@ -166,11 +166,11 @@
       "bisync_state_label": "estado bisync",
       "bisync_initialized": "inicializado",
       "bisync_needs_resync": "// resync no próximo run",
-      "prune_now_btn": "[ podar agora ]",
+      "prune_now_btn": "[ podar ]",
       "pruning_btn": "// podando…",
       "prune_summary_empty": "// nada pra remover — histórico dentro dos limites",
       "prune_summary_done": "// {n} snapshot(s) removido(s), {mb} MB liberados",
-      "commit_btn": "[ confirmar histórico ]",
+      "commit_btn": "[ salvar ]",
       "saved_btn": "[ salvo ]",
       "prune_tooltip": "aplica retenção agora — sync também faz isso automaticamente"
     },
@@ -192,8 +192,8 @@
     "size": "// tamanho",
     "modified": "// modificado",
     "last_sync": "// último sync",
-    "readonly_note": "// modo somente-leitura — backup via [ sincronizar agora ] na página da unidade",
-    "sync_btn": "[ sincronizar este save ]",
+    "readonly_note": "// modo somente-leitura — backup via [ sync ] na página da unidade",
+    "sync_btn": "[ sync este save ]",
     "sync_syncing": "// sincronizando…",
     "sync_done": "// sync ok ✓",
     "open_folder_btn": "[ abrir pasta ]",
