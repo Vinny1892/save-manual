@@ -642,6 +642,107 @@ pub struct SaveHistoryEntry {
     pub size_bytes: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ConflictEntry {
+    /// Path of the "current" winning version, relative to live root.
+    pub path: String,
+    /// Path of the preserved loser (always `<path>.conflict<n>`).
+    pub conflict_path: String,
+    /// 1-based numeric suffix — useful when a file accumulates several
+    /// rounds of unresolved conflicts (`.conflict1`, `.conflict2`, ...).
+    pub conflict_num: u32,
+    pub current_size: u64,
+    pub conflict_size: u64,
+    /// rclone-style ISO mtime. Empty when the backend didn't supply one.
+    pub current_modified: String,
+    pub conflict_modified: String,
+}
+
+/// Strip a `.conflict<N>` suffix from a path. Returns `(original, n)`
+/// or None when the path isn't a conflict marker.
+fn strip_conflict_marker(path: &str) -> Option<(String, u32)> {
+    let idx = path.rfind(".conflict")?;
+    let n_part = &path[idx + ".conflict".len()..];
+    if n_part.is_empty() {
+        return None;
+    }
+    let n: u32 = n_part.parse().ok()?;
+    let original = path[..idx].to_string();
+    if original.is_empty() {
+        return None;
+    }
+    Some((original, n))
+}
+
+/// Move the `.conflict<N>` suffix from "after extension" to "before
+/// extension" so the resulting file no longer looks like an rclone
+/// auto-generated marker. Used by the "keep both" resolution path.
+///
+/// `Mcd001.ps2.conflict1` → `Mcd001-conflict1.ps2`
+/// `save.dat.conflict2`   → `save-conflict2.dat`
+/// `weirdfile.conflict1`  → `weirdfile-conflict1` (no extension)
+fn rename_keep_both_path(conflict_path: &str) -> String {
+    let Some((original, n)) = strip_conflict_marker(conflict_path) else {
+        return conflict_path.to_string();
+    };
+    let segment_start = original.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let basename = &original[segment_start..];
+    if let Some(dot_rel) = basename.rfind('.') {
+        let abs_dot = segment_start + dot_rel;
+        format!(
+            "{}-conflict{}.{}",
+            &original[..abs_dot],
+            n,
+            &original[abs_dot + 1..]
+        )
+    } else {
+        format!("{}-conflict{}", original, n)
+    }
+}
+
+/// Pairs each `<path>.conflict<n>` entry with its matching "current"
+/// entry from the same listing. Orphan conflict files (no matching
+/// current) are skipped — they shouldn't happen under normal bisync
+/// flow but a previous failed resolve could leave one behind.
+fn find_conflicts(entries: &[rclone::ListEntry]) -> Vec<ConflictEntry> {
+    use std::collections::HashMap;
+    let by_path: HashMap<&str, &rclone::ListEntry> =
+        entries.iter().map(|e| (e.path.as_str(), e)).collect();
+
+    let mut out: Vec<ConflictEntry> = entries
+        .iter()
+        .filter(|e| !e.is_dir)
+        .filter_map(|entry| {
+            let (original, n) = strip_conflict_marker(&entry.path)?;
+            let orig = by_path.get(original.as_str())?;
+            // A directory can't be the "current" of a conflicted file —
+            // ignore the pairing (the conflict file becomes orphaned and
+            // gets skipped, matching the semantics of "no current to
+            // resolve against").
+            if orig.is_dir {
+                return None;
+            }
+            Some(ConflictEntry {
+                path: original,
+                conflict_path: entry.path.clone(),
+                conflict_num: n,
+                current_size: orig.size.max(0) as u64,
+                conflict_size: entry.size.max(0) as u64,
+                current_modified: orig.mod_time.clone(),
+                conflict_modified: entry.mod_time.clone(),
+            })
+        })
+        .collect();
+    // Path first (groups related conflicts together), then conflict_num
+    // (so `.conflict1` shows before `.conflict2` for the same file).
+    out.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then(a.conflict_num.cmp(&b.conflict_num))
+    });
+    out
+}
+
 /// Pure aggregation pass — splits each history-relative entry path into
 /// `<ts>/<mode>/<path_in_mode>`, filters for entries matching `sub_path`
 /// (exact, or a child below it — trailing-slash check guards against
@@ -729,6 +830,90 @@ async fn list_save_history(
     let entries = rclone::list_recursive(&history_fs, &history_remote)?;
 
     Ok(group_history_entries(&entries, &sub_path))
+}
+
+#[tauri::command]
+async fn list_conflicts(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ConflictEntry>, String> {
+    let emu = {
+        let s = state.lock().await;
+        let emu = db::get(&s.conn, &id)?;
+        validate_config(&emu)?;
+        emu
+    };
+    let backend = Backend::for_emulator(&emu)?;
+    let live = backend.live_fs();
+    let (fs, remote) = rclone::split_root(&live);
+    let entries = rclone::list_recursive(&fs, &remote)?;
+    Ok(find_conflicts(&entries))
+}
+
+#[tauri::command]
+async fn resolve_conflict(
+    id: String,
+    conflict_path: String,
+    action: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let (source, emu) = {
+        let s = state.lock().await;
+        let emu = db::get(&s.conn, &id)?;
+        validate_config(&emu)?;
+        (emu.source_path.clone(), emu)
+    };
+
+    let (original, _) = strip_conflict_marker(&conflict_path)
+        .ok_or_else(|| format!("não é um marker de conflito: {conflict_path}"))?;
+
+    let backend = Backend::for_emulator(&emu)?;
+    let live_root = backend.live_fs();
+    let source_root = source.trim_end_matches(['/', '\\']).to_string();
+
+    let live_current = format!("{live_root}/{original}");
+    let live_conflict = format!("{live_root}/{conflict_path}");
+    let source_current = format!("{source_root}/{original}");
+    let source_conflict = format!("{source_root}/{conflict_path}");
+
+    // `--conflict-loser num` always renames a single file (never a dir), so
+    // every resolve operates on individual files regardless of the
+    // emulator's save granularity.
+    match action.as_str() {
+        "keep_current" => {
+            rclone::delete_file_at(&live_conflict)?;
+            // Source might already be missing (user-deleted, or earlier
+            // resync raced). Don't fail the whole operation in that case.
+            let _ = rclone::delete_file_at(&source_conflict);
+        }
+        "use_conflict" => {
+            rclone::copy_path(&live_conflict, &live_current, true)?;
+            rclone::copy_path(&source_conflict, &source_current, true)?;
+            rclone::delete_file_at(&live_conflict)?;
+            let _ = rclone::delete_file_at(&source_conflict);
+        }
+        "keep_both" => {
+            // Promote the conflict file to a permanent name (no `.conflictN`
+            // suffix) so it survives future syncs as a sibling of the current.
+            let renamed = rename_keep_both_path(&conflict_path);
+            let live_renamed = format!("{live_root}/{renamed}");
+            let source_renamed = format!("{source_root}/{renamed}");
+            rclone::move_file_at(&live_conflict, &live_renamed)?;
+            let _ = rclone::move_file_at(&source_conflict, &source_renamed);
+        }
+        _ => return Err(format!("ação inválida: {action} (use keep_current|use_conflict|keep_both)")),
+    }
+
+    // Live + source mutated outside the bisync flow — invalidate state so
+    // the next sync re-baselines instead of flagging artificial conflicts.
+    {
+        let s = state.lock().await;
+        let _ = db::mark_bisync_needs_resync(&s.conn, &emu.id);
+    }
+
+    emit_changed(&app, &state, &id).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1009,6 +1194,9 @@ fn do_sync(
             path2: &path2,
             backup_dir2: backupdir2.as_deref(),
             conflict_resolve: "newer",
+            // Preserve the loser as `<path>.conflict1` instead of deleting
+            // — conflict UI later surfaces these for the user to resolve.
+            conflict_loser: "num",
             resync: false,
             resync_mode: "newer",
         })?;
@@ -1062,6 +1250,7 @@ fn do_initial_bisync(
             path2: &path2,
             backup_dir2: None, // first run never writes history
             conflict_resolve: "newer",
+            conflict_loser: "num",
             resync: true,
             resync_mode,
         })?;
@@ -1249,6 +1438,8 @@ pub fn run() {
             supports_incremental_history,
             list_save_history,
             revert_save,
+            list_conflicts,
+            resolve_conflict,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1444,5 +1635,153 @@ mod tests {
         let out = group_history_entries(&entries, "Mcd001.ps2");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].size_bytes, 50);
+    }
+
+    // ─── strip_conflict_marker / rename_keep_both_path ────────────────────
+
+    #[test]
+    fn strip_conflict_marker_basic() {
+        assert_eq!(
+            strip_conflict_marker("Mcd001.ps2.conflict1"),
+            Some(("Mcd001.ps2".to_string(), 1))
+        );
+        assert_eq!(
+            strip_conflict_marker("path/to/save.dat.conflict42"),
+            Some(("path/to/save.dat".to_string(), 42))
+        );
+    }
+
+    #[test]
+    fn strip_conflict_marker_rejects_non_marker() {
+        // No suffix at all
+        assert_eq!(strip_conflict_marker("Mcd001.ps2"), None);
+        // Suffix without numeric tail
+        assert_eq!(strip_conflict_marker("foo.conflict"), None);
+        // Numeric tail but no .conflict prefix
+        assert_eq!(strip_conflict_marker("foo.bak1"), None);
+        // Non-numeric tail
+        assert_eq!(strip_conflict_marker("foo.conflictX"), None);
+    }
+
+    #[test]
+    fn strip_conflict_marker_rejects_orphan_with_empty_original() {
+        // `.conflict1` at root with nothing before — bogus, would
+        // try to look up "" as the original. Skip.
+        assert_eq!(strip_conflict_marker(".conflict1"), None);
+    }
+
+    #[test]
+    fn rename_keep_both_moves_marker_before_extension() {
+        assert_eq!(
+            rename_keep_both_path("Mcd001.ps2.conflict1"),
+            "Mcd001-conflict1.ps2"
+        );
+        assert_eq!(
+            rename_keep_both_path("user/save/uuid/title-id/save.dat.conflict2"),
+            "user/save/uuid/title-id/save-conflict2.dat"
+        );
+    }
+
+    #[test]
+    fn rename_keep_both_no_extension_appends() {
+        assert_eq!(
+            rename_keep_both_path("README.conflict1"),
+            "README-conflict1"
+        );
+        assert_eq!(
+            rename_keep_both_path("path/to/README.conflict3"),
+            "path/to/README-conflict3"
+        );
+    }
+
+    #[test]
+    fn rename_keep_both_passthrough_when_not_a_marker() {
+        // If the path doesn't look like a conflict marker, we return it
+        // unchanged. Defensive — should never be called this way in
+        // practice but the helper shouldn't corrupt input.
+        assert_eq!(rename_keep_both_path("Mcd001.ps2"), "Mcd001.ps2");
+    }
+
+    #[test]
+    fn rename_keep_both_extension_in_dirname_only() {
+        // A dot in a parent directory shouldn't be treated as extension.
+        // e.g. "1.0.0/save.conflict1" → "1.0.0/save-conflict1" (no ext)
+        assert_eq!(
+            rename_keep_both_path("1.0.0/save.conflict1"),
+            "1.0.0/save-conflict1"
+        );
+    }
+
+    // ─── find_conflicts ────────────────────────────────────────────────────
+
+    fn list_entry(path: &str, size: i64, mod_time: &str) -> rclone::ListEntry {
+        rclone::ListEntry {
+            path: path.into(),
+            name: path.rsplit('/').next().unwrap_or("").into(),
+            size,
+            mod_time: mod_time.into(),
+            is_dir: false,
+        }
+    }
+
+    #[test]
+    fn find_conflicts_pairs_current_with_loser() {
+        let entries = vec![
+            list_entry("Mcd001.ps2", 8_388_608, "2026-05-09T14:30:00Z"),
+            list_entry("Mcd001.ps2.conflict1", 8_388_608, "2026-05-08T20:00:00Z"),
+        ];
+        let out = find_conflicts(&entries);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].path, "Mcd001.ps2");
+        assert_eq!(out[0].conflict_path, "Mcd001.ps2.conflict1");
+        assert_eq!(out[0].conflict_num, 1);
+        assert_eq!(out[0].current_size, 8_388_608);
+        assert_eq!(out[0].conflict_size, 8_388_608);
+        assert_eq!(out[0].current_modified, "2026-05-09T14:30:00Z");
+    }
+
+    #[test]
+    fn find_conflicts_handles_multi_conflict_chain() {
+        // When a file has had multiple rounds of unresolved conflict,
+        // .conflict1 AND .conflict2 coexist alongside the current.
+        let entries = vec![
+            list_entry("save.dat", 100, ""),
+            list_entry("save.dat.conflict1", 90, ""),
+            list_entry("save.dat.conflict2", 110, ""),
+        ];
+        let out = find_conflicts(&entries);
+        assert_eq!(out.len(), 2);
+        // Sorted by (path, conflict_num)
+        assert_eq!(out[0].conflict_num, 1);
+        assert_eq!(out[1].conflict_num, 2);
+    }
+
+    #[test]
+    fn find_conflicts_skips_orphan_conflict_files() {
+        // .conflict1 exists but the original was deleted — orphan. Should
+        // be ignored (will require manual cleanup or a future "orphans"
+        // surface in the UI).
+        let entries = vec![list_entry("save.dat.conflict1", 90, "")];
+        assert!(find_conflicts(&entries).is_empty());
+    }
+
+    #[test]
+    fn find_conflicts_ignores_dir_entries() {
+        let dir = rclone::ListEntry {
+            path: "save.dat".into(),
+            name: "save.dat".into(),
+            size: 0,
+            mod_time: String::new(),
+            is_dir: true,
+        };
+        let entries = vec![dir, list_entry("save.dat.conflict1", 90, "")];
+        // current is a dir entry — treat as no current, conflict is orphaned
+        // and skipped.
+        assert!(find_conflicts(&entries).is_empty());
+    }
+
+    #[test]
+    fn find_conflicts_empty_input_returns_empty() {
+        assert!(find_conflicts(&[]).is_empty());
     }
 }

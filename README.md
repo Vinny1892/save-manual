@@ -315,9 +315,12 @@ gatilho do local (sync now / watcher / proc-watch).
   típicos (~MB) tudo bem; pra remotes lentos uma chamada async com
   `core/stats` polling viria depois.
 - Sem progress bar — é all-or-nothing.
-- Conflitos (`conflict_resolve: "newer"` hoje, hard-coded) são resolvidos
-  automaticamente por mtime. UI de resolução manual está na fase 3 do
-  roadmap.
+- Conflitos são resolvidos por `--conflict-resolve newer` (mtime mais recente
+  ganha). O loser **NÃO é descartado** — `--conflict-loser num` preserva
+  como `<arquivo>.conflict1`. UI surfaceia esses no card `[ conflicts ]`
+  do emulator detail com 3 ações: `[ keep current ]` (apaga `.conflict`),
+  `[ use conflict ]` (sobrescreve current), `[ keep both ]` (renomeia
+  `.conflict1` pra nome permanente).
 - OAuth (Drive, Dropbox) ainda não implementado — só remotes que aceitam
   credenciais estáticas funcionam por enquanto.
 - Revert pela UI: card `[ history ]` no save detail lista versões em
@@ -351,6 +354,7 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 | Covers | `fetch_cover_url(title, kind?)` |
 | Rclone | `rclone_version`, `rclone_list_remotes`, `rclone_create_s3_remote`, `rclone_delete_remote`, `rclone_get_remote`, `rclone_test_remote` |
 | History | `get_history_settings`, `set_history_settings`, `supports_incremental_history`, `list_save_history`, `revert_save` |
+| Conflicts | `list_conflicts`, `resolve_conflict` |
 
 ### Eventos (do backend pro frontend)
 
@@ -390,6 +394,12 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 
 14. **Save detection inclui prefix + boundary slash**: `group_history_entries` filtra entradas do listing recursivo por `sub_path`. Aceita match exato OU prefix seguido de `/` — sem o check de slash, "Mcd001.ps2" também casaria com "Mcd001.ps2.bak" e "Mcd0011.ps2". Teste `group_history_handles_exact_file_match_pcsx2_style` cobre.
 
+15. **`--conflict-loser num` sempre, nunca delete**: bisync hoje sempre preserva o loser como `.conflict1`. Zero data-loss por design. O custo é poluição moderada no save folder se há muitos conflitos não resolvidos — o card `[ conflicts ]` no emulator detail é o "inbox" pra limpar. Pisca em accent quando há pendentes.
+
+16. **`use_conflict` opera por arquivo, não por save**: pra eden/rpcs3, se uma única sync gera múltiplos `.conflict1` dentro do mesmo título (ex: 3 arquivos overwritten ao mesmo tempo), cada um é uma linha separada no card. Resolver tem que ser feito por arquivo. v2 pode agrupar por save.
+
+17. **`keep_both` renomeia movendo o sufixo pra antes da extensão**: `Mcd001.ps2.conflict1` → `Mcd001-conflict1.ps2`. Mantém a extensão útil (`.ps2`) pra emulador identificar o tipo. Pra arquivos sem extensão, simplesmente apenda `-conflictN`. Helper `rename_keep_both_path` tem teste cobrindo paths com dots no diretório (`1.0.0/save.conflict1`) que não devem ser confundidos com extensão.
+
 ---
 
 ## Roadmap
@@ -408,8 +418,8 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 - [x] History modes independentes (incremental via `--backupdir2`, full via pre-snapshot, qualquer combinação)
 - [x] Settings por emulador (enabled, incremental_enabled, full_enabled, retention_days, retention_max_mb)
 - [x] **Fase 2**: UI de revert (`list_save_history` + `revert_save` + card `[ history ]` no save detail)
-- [x] Testes unitários (57 testes em backend/db/lib/rclone — `cargo test --lib`)
-- [ ] **Fase 3**: UI de conflict resolution (bisync `--conflict-resolve none` + modal)
+- [x] **Fase 3**: Conflict resolution via `--conflict-loser num` (loser preservado como `.conflict1`, card `[ conflicts ]` no emulator detail com 3 ações: keep_current / use_conflict / keep_both)
+- [x] Testes unitários (69 testes em backend/db/lib/rclone — `cargo test --lib`)
 - [ ] **Fase 4**: Prune automático (retention enforcement via `purge` no fim de cada sync)
 - [ ] Duplicação de memcard PCSX2 em vez de overwrite quando há conflito
 - [ ] Async sync com progress (core/stats)
@@ -473,6 +483,21 @@ Você desligou incremental E full com `history.enabled = true`. Backend
 rejeita esse combo ("selecione pelo menos um modo de backup"). Marque um
 dos dois ou desligue history inteiro com `[ off ]`.
 
+**Aparecem arquivos `.conflict1` nos meus saves**
+
+Comportamento intencional. Quando bisync detecta o mesmo arquivo
+modificado em ambos os lados desde a última sync, o "vencedor" (mtime
+mais recente) sobrescreve, mas o "perdedor" é preservado como
+`<arquivo>.conflict1` pra você decidir depois. Card `[ conflicts ]` no
+emulator detail surfaceia esses pra resolução com 3 ações:
+
+- `[ keep current ]` — apaga o `.conflict1`, fica só o vencedor (default seguro).
+- `[ use conflict ]` — sobrescreve current com `.conflict1`, depois apaga (descarta o vencedor inicial).
+- `[ keep both ]` — renomeia `Mcd001.ps2.conflict1` → `Mcd001-conflict1.ps2` (mantém a extensão pra emulador identificar). Útil em pcsx2 onde o memcard inteiro é a unidade.
+
+Depois de qualquer resolução, próximo sync re-baseliza com `--resync`
+(mesmo motivo do revert: state files do bisync ficaram defasados).
+
 ## Testes
 
 ```bash
@@ -480,14 +505,14 @@ cd src-tauri
 cargo test --lib
 ```
 
-Cobertura atual (57 testes):
+Cobertura atual (69 testes):
 
 | Módulo | Cobertura |
 |---|---|
 | `backend` | path joining (POSIX vs Windows), live/snapshot fs strings (run/full/delta), history-root-é-sibling invariant, full-vs-delta-never-collide invariant, child(), for_emulator() validation matrix |
 | `db` | migrations v3/v4/v5 (inclui translação de mode legado pros booleanos), supports_incremental classification, history settings round-trip com modos independentes, pcsx2 coerção de incremental, at-least-one-mode validation (rejeita ambos off quando enabled, aceita quando disabled), defaults round-trip via set_history (cross-check), bisync_initialized lifecycle |
 | `rclone` | split_root pra rclone vs Windows-local (drive letter intacto) vs POSIX absolute vs bare "remote:" |
-| `lib` | sync_subtrees per emulator, validate_config matrix (local/rclone, missing fields), group_history_entries (bucket por ts, combina full+delta no mesmo run, filtra por sub_path prefix com boundary slash, soma só files não dirs, ignora modos desconhecidos) |
+| `lib` | sync_subtrees per emulator, validate_config matrix (local/rclone, missing fields), group_history_entries (bucket por ts, combina full+delta no mesmo run, filtra por sub_path prefix com boundary slash, soma só files não dirs, ignora modos desconhecidos), strip_conflict_marker (parse válido, rejeita orfãos sem original e sufixos não-numéricos), rename_keep_both_path (move marker pra antes da extensão, sem extensão apenda, dot em diretório não confunde), find_conflicts (pareia current+loser, multi-conflict chain `.conflict1+.conflict2`, ignora órfãos e dir entries) |
 
 Tests rodam offline — não exercitam o librclone real (FFI inicializa só em
 runtime). Integração end-to-end com S3/MinIO ainda é manual.

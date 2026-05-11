@@ -400,6 +400,47 @@ pub fn purge(fs: &str, path: &str) -> Result<(), String> {
         .map(|_| ())
 }
 
+/// Delete a single file (not a directory).
+pub fn deletefile(fs: &str, path: &str) -> Result<(), String> {
+    rpc_json(
+        "operations/deletefile",
+        serde_json::json!({ "fs": fs, "remote": path }),
+    )
+    .map(|_| ())
+}
+
+/// Move/rename a single file across the same or different backend.
+pub fn movefile(
+    src_fs: &str,
+    src_remote: &str,
+    dst_fs: &str,
+    dst_remote: &str,
+) -> Result<(), String> {
+    rpc_json(
+        "operations/movefile",
+        serde_json::json!({
+            "srcFs": src_fs,
+            "srcRemote": src_remote,
+            "dstFs": dst_fs,
+            "dstRemote": dst_remote,
+        }),
+    )
+    .map(|_| ())
+}
+
+/// Convenience wrappers that take full rclone fs strings (calling split_root
+/// internally). Used in revert/resolve flows that compute full paths.
+pub fn delete_file_at(full: &str) -> Result<(), String> {
+    let (fs, remote) = split_root(full);
+    deletefile(&fs, &remote)
+}
+
+pub fn move_file_at(src: &str, dst: &str) -> Result<(), String> {
+    let (src_fs, src_remote) = split_root(src);
+    let (dst_fs, dst_remote) = split_root(dst);
+    movefile(&src_fs, &src_remote, &dst_fs, &dst_remote)
+}
+
 #[derive(Debug)]
 pub struct BisyncOpts<'a> {
     pub path1: &'a str,
@@ -409,6 +450,11 @@ pub struct BisyncOpts<'a> {
     /// "newer" (default), "older", "larger", "smaller", "path1", "path2", "none".
     /// "none" surfaces conflicts in the response without resolving.
     pub conflict_resolve: &'a str,
+    /// "num" preserves the loser as `<path>.conflict1` (data-loss-free).
+    /// "delete" silently discards the loser. Empty string omits the flag
+    /// and uses rclone's default ("num"). We pass "num" explicitly for
+    /// the conflict-resolution UI to have something to surface.
+    pub conflict_loser: &'a str,
     /// First-run flag — must be true the first time this pair is bisynced.
     pub resync: bool,
     /// When `resync = true`, picks the seed: "path1" (push), "path2" (pull),
@@ -428,6 +474,9 @@ pub fn bisync(opts: &BisyncOpts) -> Result<serde_json::Value, String> {
     });
     if opts.resync {
         input["resyncMode"] = opts.resync_mode.into();
+    }
+    if !opts.conflict_loser.is_empty() {
+        input["conflictLoser"] = opts.conflict_loser.into();
     }
     if let Some(bd) = opts.backup_dir2 {
         input["backupdir2"] = bd.into();

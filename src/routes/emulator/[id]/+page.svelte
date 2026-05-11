@@ -45,6 +45,20 @@
   let historyDraft = $state<HistorySettings | null>(null);
   let allowsIncremental = $state(true);
 
+  interface ConflictEntry {
+    path: string;
+    conflict_path: string;
+    conflict_num: number;
+    current_size: number;
+    conflict_size: number;
+    current_modified: string;
+    conflict_modified: string;
+  }
+  let conflicts = $state<ConflictEntry[]>([]);
+  let conflictsLoading = $state(false);
+  let conflictsErr = $state("");
+  let resolvingPath = $state<string | null>(null);
+
   const current = derived(
     [emulators, page],
     ([$emulators, $page]) => $emulators.find((e) => e.id === $page.params.id),
@@ -74,10 +88,15 @@
       history = null;
       historyDraft = null;
       historyErr = "";
+      conflicts = [];
+      conflictsErr = "";
       if (emu.id === "eden" && emu.source_path) {
         refreshEdenUuid(emu.source_path);
       }
       loadHistorySettings(emu.id);
+      // Only attempt conflict listing if dest is configured — otherwise
+      // backend errors out and we surface a noisy validation message.
+      if (emu.dest_path) loadConflicts(emu.id);
     }
   });
 
@@ -146,6 +165,67 @@
     } finally {
       savingHistory = false;
     }
+  }
+
+  async function loadConflicts(emuId: string) {
+    conflictsLoading = true;
+    conflictsErr = "";
+    try {
+      conflicts = await invoke<ConflictEntry[]>("list_conflicts", { id: emuId });
+    } catch (e) {
+      conflictsErr = String(e);
+      conflicts = [];
+    } finally {
+      conflictsLoading = false;
+    }
+  }
+
+  async function resolveConflict(emuId: string, c: ConflictEntry, action: string) {
+    resolvingPath = c.conflict_path;
+    conflictsErr = "";
+    try {
+      await invoke("resolve_conflict", {
+        id: emuId,
+        conflictPath: c.conflict_path,
+        action,
+      });
+      // Optimistic: remove resolved row immediately rather than refetching.
+      conflicts = conflicts.filter((x) => x.conflict_path !== c.conflict_path);
+    } catch (e) {
+      conflictsErr = String(e);
+    } finally {
+      resolvingPath = null;
+    }
+  }
+
+  function fmtBytes(b: number): string {
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    return `${(b / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  function fmtMTime(iso: string): string {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  /** Compare two ISO strings, return "current" / "conflict" / "tie" / "" */
+  function newerSide(c: ConflictEntry): "current" | "conflict" | "tie" | "" {
+    if (!c.current_modified || !c.conflict_modified) return "";
+    const a = new Date(c.current_modified).getTime();
+    const b = new Date(c.conflict_modified).getTime();
+    if (isNaN(a) || isNaN(b)) return "";
+    if (a > b) return "current";
+    if (b > a) return "conflict";
+    return "tie";
   }
 
   async function loadRemotes() {
@@ -650,6 +730,78 @@
         {emu.proc_watching ? "// monitoring — syncs when process exits" : "// idle"}
       </span>
     </div>
+  </section>
+
+  <section class="card" class:has-conflicts={conflicts.length > 0}>
+    <header class="card-head">
+      <span class="card-tag" class:warn={conflicts.length > 0}>[ conflicts ]</span>
+      <span class="card-meta">
+        {#if conflictsLoading}
+          // scanning…
+        {:else if conflicts.length === 0}
+          // none
+        {:else}
+          {conflicts.length} unresolved
+        {/if}
+      </span>
+      <button
+        class="hist-refresh"
+        onclick={() => loadConflicts(emu.id)}
+        disabled={conflictsLoading || !emu.dest_path}
+        aria-label="refresh"
+      >↻</button>
+    </header>
+
+    {#if conflictsErr}
+      <p class="conflict-err">! {conflictsErr}</p>
+    {:else if !conflictsLoading && conflicts.length === 0}
+      <p class="conflict-empty">// nenhum conflito — sync preservou ambas as versões via .conflict1 quando preciso, e nada está pendente</p>
+    {:else if conflicts.length > 0}
+      <p class="conflict-hint">// {conflicts.length === 1 ? "1 arquivo tem" : `${conflicts.length} arquivos têm`} versão divergente preservada. resolver remove o `.conflict{conflicts[0]?.conflict_num}` correspondente.</p>
+      <ul class="conflict-list">
+        {#each conflicts as c (c.conflict_path)}
+          {@const newer = newerSide(c)}
+          <li class="conflict-row" class:resolving={resolvingPath === c.conflict_path}>
+            <div class="conflict-path-row">
+              <span class="conflict-path-text" title={c.path}>{c.path}</span>
+              <span class="conflict-suffix">.conflict{c.conflict_num}</span>
+            </div>
+            <div class="conflict-sides">
+              <div class="conflict-side" class:newer={newer === "current"}>
+                <span class="side-label">current</span>
+                <span class="side-detail">{fmtBytes(c.current_size)} · {fmtMTime(c.current_modified)}</span>
+                {#if newer === "current"}<span class="newer-tag">newer</span>{/if}
+              </div>
+              <div class="conflict-side" class:newer={newer === "conflict"}>
+                <span class="side-label">.conflict</span>
+                <span class="side-detail">{fmtBytes(c.conflict_size)} · {fmtMTime(c.conflict_modified)}</span>
+                {#if newer === "conflict"}<span class="newer-tag">newer</span>{/if}
+              </div>
+            </div>
+            <div class="conflict-actions">
+              <button
+                class="btn btn-thin"
+                onclick={() => resolveConflict(emu.id, c, "keep_current")}
+                disabled={resolvingPath !== null}
+                title="apaga o .conflict — fica só o current"
+              >[ keep current ]</button>
+              <button
+                class="btn btn-thin"
+                onclick={() => resolveConflict(emu.id, c, "use_conflict")}
+                disabled={resolvingPath !== null}
+                title="sobrescreve current com o .conflict"
+              >[ use conflict ]</button>
+              <button
+                class="btn btn-thin"
+                onclick={() => resolveConflict(emu.id, c, "keep_both")}
+                disabled={resolvingPath !== null}
+                title="renomeia .conflict pra nome permanente, mantém os dois"
+              >[ keep both ]</button>
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
   </section>
 
   <section class="card">
@@ -1278,6 +1430,165 @@
   .hint-line.err {
     color: var(--error-text, #e05c5c);
     font-style: normal;
+  }
+
+  .card.has-conflicts {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+
+  .card-tag.warn {
+    color: var(--error-text, #e05c5c);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.55; }
+  }
+
+  .hist-refresh {
+    background: transparent;
+    border: 1px dashed var(--border-strong);
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 0.85rem;
+    padding: 0.1rem 0.45rem;
+    cursor: pointer;
+    transition: all 0.14s;
+    margin-left: 0.5rem;
+  }
+
+  .hist-refresh:hover:not(:disabled) {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .hist-refresh:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .conflict-empty {
+    margin: 0.3rem 0;
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    font-style: italic;
+    letter-spacing: 0.04em;
+  }
+
+  .conflict-err {
+    margin: 0.3rem 0;
+    font-size: 0.76rem;
+    color: var(--error-text, #e05c5c);
+  }
+
+  .conflict-hint {
+    margin: 0 0 0.6rem;
+    font-size: 0.7rem;
+    color: var(--text-faint);
+    font-style: italic;
+    letter-spacing: 0.04em;
+  }
+
+  .conflict-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+
+  .conflict-row {
+    border: 1px dashed var(--border);
+    padding: 0.6rem 0.7rem;
+    background: var(--bg-hint);
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+  }
+
+  .conflict-row.resolving {
+    opacity: 0.55;
+  }
+
+  .conflict-path-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+
+  .conflict-path-text {
+    color: var(--text-bright);
+    font-size: 0.78rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .conflict-suffix {
+    color: var(--accent);
+    font-size: 0.7rem;
+    font-family: "Major Mono Display", monospace;
+    flex-shrink: 0;
+  }
+
+  .conflict-sides {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+  }
+
+  @media (max-width: 540px) {
+    .conflict-sides {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .conflict-side {
+    border-left: 2px solid var(--border-strong);
+    padding: 0.3rem 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    position: relative;
+  }
+
+  .conflict-side.newer {
+    border-left-color: var(--accent);
+  }
+
+  .side-label {
+    color: var(--text-muted);
+    font-size: 0.66rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .side-detail {
+    color: var(--text-soft);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .newer-tag {
+    position: absolute;
+    top: 0.25rem;
+    right: 0.4rem;
+    color: var(--accent);
+    font-size: 0.62rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .conflict-actions {
+    display: flex;
+    gap: 0.45rem;
+    flex-wrap: wrap;
   }
 
   .hist-row {
