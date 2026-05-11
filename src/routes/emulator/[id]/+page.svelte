@@ -867,23 +867,41 @@
       <div class="hist-row">
         <span class="field-label">modes</span>
         <div class="check-stack">
-          <label class="check-row" class:disabled={!allowsIncremental || !historyDraft.enabled}>
+          <label
+            class="check-row"
+            class:on={historyDraft.incremental_enabled}
+            class:disabled={!allowsIncremental || !historyDraft.enabled}
+          >
             <input
               type="checkbox"
               bind:checked={historyDraft.incremental_enabled}
               disabled={!allowsIncremental || !historyDraft.enabled || lockOff("incremental")}
             />
-            <span class="check-label">[ incremental ]</span>
-            <span class="check-hint">só arquivos sobrescritos vão pra delta/</span>
+            <span class="check-mark" aria-hidden="true">
+              {historyDraft.incremental_enabled ? "[■]" : "[ ]"}
+            </span>
+            <div class="check-text">
+              <span class="check-label">incremental</span>
+              <span class="check-hint">só arquivos sobrescritos vão pra delta/</span>
+            </div>
           </label>
-          <label class="check-row" class:disabled={!historyDraft.enabled}>
+          <label
+            class="check-row"
+            class:on={historyDraft.full_enabled}
+            class:disabled={!historyDraft.enabled}
+          >
             <input
               type="checkbox"
               bind:checked={historyDraft.full_enabled}
               disabled={!historyDraft.enabled || lockOff("full")}
             />
-            <span class="check-label">[ full ]</span>
-            <span class="check-hint">estado completo copiado pra full/ antes de cada sync</span>
+            <span class="check-mark" aria-hidden="true">
+              {historyDraft.full_enabled ? "[■]" : "[ ]"}
+            </span>
+            <div class="check-text">
+              <span class="check-label">full</span>
+              <span class="check-hint">estado completo copiado pra full/ antes de cada sync</span>
+            </div>
           </label>
         </div>
       </div>
@@ -1653,47 +1671,88 @@
     padding-top: 0.3rem;
   }
 
-  .check-stack {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    flex: 1;
-    min-width: 0;
-  }
-
   .check-row {
     display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
+    align-items: flex-start;
+    gap: 0.55rem;
     cursor: pointer;
-    color: var(--text-bright);
-    font-size: 0.78rem;
-    letter-spacing: 0.04em;
-    flex-wrap: wrap;
+    padding: 0.35rem 0.5rem;
+    border: 1px dashed transparent;
+    transition: background 0.12s, border-color 0.12s;
+  }
+
+  .check-row:hover:not(.disabled) {
+    background: var(--hover-tint);
+    border-color: var(--border);
   }
 
   .check-row.disabled {
-    color: var(--text-faint);
     cursor: not-allowed;
   }
 
+  /* Native input is the source-of-truth for the form state but visually
+     hidden — the `.check-mark` span renders the ASCII checkbox instead.
+     Kept reachable via keyboard (Tab + Space) by leaving it in the DOM. */
   .check-row input[type="checkbox"] {
-    accent-color: var(--accent);
-    width: 1rem;
-    height: 1rem;
-    cursor: pointer;
-    flex-shrink: 0;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+    margin: 0;
   }
 
-  .check-row input[type="checkbox"]:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
+  .check-mark {
+    font-family: "Major Mono Display", monospace;
+    font-size: 0.95rem;
+    color: var(--text-muted);
+    letter-spacing: -0.04em;
+    flex-shrink: 0;
+    transition: color 0.12s, text-shadow 0.12s;
+    line-height: 1.15;
+    user-select: none;
+    /* Fixed width so [ ] and [■] occupy the same horizontal space —
+       prevents the label from jittering when toggling. */
+    min-width: 1.9rem;
+    text-align: center;
+  }
+
+  .check-row.on .check-mark {
+    color: var(--accent);
+    text-shadow: 0 0 6px rgba(255, 191, 0, 0.35);
+  }
+
+  .check-row:hover:not(.disabled) .check-mark {
+    color: var(--accent);
+  }
+
+  .check-row.disabled .check-mark {
+    opacity: 0.4;
+  }
+
+  /* Keyboard focus indicator — outline the bracket since the input is hidden. */
+  .check-row input[type="checkbox"]:focus-visible + .check-mark {
+    outline: 1px dashed var(--accent);
+    outline-offset: 2px;
+  }
+
+  .check-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
+    padding-top: 0.05rem;
   }
 
   .check-label {
-    font-family: "Major Mono Display", monospace;
-    color: var(--accent);
+    color: var(--text-bright);
+    font-size: 0.82rem;
+    letter-spacing: 0.05em;
     text-transform: lowercase;
+  }
+
+  .check-row.on .check-label {
+    color: var(--accent);
   }
 
   .check-row.disabled .check-label {
@@ -1702,8 +1761,18 @@
 
   .check-hint {
     color: var(--text-muted);
-    font-size: 0.69rem;
+    font-size: 0.68rem;
     font-style: italic;
+    letter-spacing: 0.04em;
+    line-height: 1.35;
+  }
+
+  .check-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    flex: 1;
+    min-width: 0;
   }
 
   .field-grid {
