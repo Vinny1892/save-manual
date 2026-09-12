@@ -60,7 +60,7 @@ Outros alvos:
 ```bash
 npm run build                   # só a web UI  → apps/web/build
 npm run check                   # svelte-check
-cargo test --workspace          # 81 testes (40 no core, 41 no client)
+cargo test --workspace          # 81 testes, todos em crates/core
 cargo run -p save-sync-server   # server local (ver env vars abaixo)
 ```
 
@@ -121,13 +121,15 @@ save-sync/
 ├── icon.svg                       # ícone do app (cartucho âmbar + LED verde)
 │
 ├── crates/core/src/               # domínio compartilhado — nada de Tauri/HTTP/UI aqui
+│   ├── engine.rs                  # motor de sync: do_sync, bisync inicial, ProgressSink
+│   ├── history.rs                 # snapshots, retenção/prune e conflitos (.conflictN)
 │   ├── db.rs                      # SQLite (rusqlite) — schema dos emuladores
 │   ├── detect.rs                  # auto-detecção de paths por emulador
 │   ├── saves.rs                   # listagem/sync de saves (eden/rpcs3/pcsx2)
 │   ├── ps2mc.rs                   # parser de .ps2 (memcard PS2, ECC + FAT)
 │   ├── ps2db.rs                   # download/parse PCSX2 GameIndex.yaml
 │   ├── titledb.rs                 # download/parse blawar US.en.json (Switch)
-│   ├── sync.rs                    # filesystem watcher + bulk sync (eden custom)
+│   ├── sync.rs                    # filesystem watcher + leitura do UUID do eden
 │   ├── backend.rs                 # enum Backend (Local | Rclone) — abstração de destino
 │   └── rclone.rs                  # FFI dynamic load do librclone + helpers S3
 │
@@ -600,7 +602,7 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 
 ### Próximas fases — server + clients
 
-- [ ] **Extrair o miolo do `lib.rs` pro core**: `do_sync`, history, prune e resolução de conflito ainda moram no crate do Tauri. O server precisa deles, então saem de lá junto com os 41 testes
+- [x] **Extrair o miolo do `lib.rs` pro core** ([#1](https://github.com/Vinny1892/save-manual/issues/1)): `do_sync`, history, prune e conflitos viraram `core::engine` e `core::history`; o progresso sai por `ProgressSink` em vez de `AppHandle`. O `lib.rs` do client caiu de 2246 pra 1184 linhas e os 81 testes passaram todos pro core
 - [ ] **Protocolo HTTP**: manifesto (`path`, `size`, `mtime`, hash) → diff → upload/download → commit. Conflito mantém a semântica atual (mtime mais novo ganha, perdedor preservado)
 - [ ] **Server**: API do protocolo, login com usuário e senha, histórico/retenção server-side, title DBs centralizadas, SSE de progresso
 - [ ] **Web UI**: transporte HTTP (`invoke` → `fetch`, `listen` → `EventSource`), tela de login, navegador de diretórios server-side no lugar do picker nativo
@@ -693,11 +695,10 @@ pra sempre".
 
 ```bash
 cargo test --workspace          # tudo
-cargo test -p save-sync-core    # só o domínio (40) — rápido, sem compilar Tauri
-cargo test -p save-sync         # só o client (41)
+cargo test -p save-sync-core    # os 81 — rápido, sem compilar Tauri
 ```
 
-Cobertura atual (81 testes — 40 em `crates/core`, 41 em `apps/client-pc`):
+Cobertura atual (81 testes, todos em `crates/core` — o client virou camada fina e não tem lógica própria pra testar):
 
 | Módulo | Cobertura |
 |---|---|
