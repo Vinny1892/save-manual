@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build librclone (rclone as a C-shared library) for the current host.
 #
-# Output: src-tauri/lib/<rust-target-triple>/librclone.{so,dll,dylib} + librclone.h
+# Output: vendor/librclone/<rust-target-triple>/librclone.{so,dll,dylib} + librclone.h
 #
 # Required tools:
 #   - Go >= 1.21      (https://go.dev/dl/)
@@ -18,8 +18,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RCLONE_VERSION="${RCLONE_VERSION:-v1.69.0}"
-SRC_DIR="${RCLONE_SRC:-$ROOT/build/rclone-src}"
-OUT_BASE="$ROOT/src-tauri/lib"
+SRC_DIR="${RCLONE_SRC:-$ROOT/vendor/rclone-src}"
+OUT_BASE="$ROOT/vendor/librclone"
 
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)

@@ -1,16 +1,16 @@
 name: build
 
-# Every push to master compiles artifacts for Windows (installable + portable)
-# and Linux x64/arm64 (AppImage + .deb) and uploads them as workflow artifacts.
-# Download from the Actions tab — no GitHub Releases are created automatically.
-# Manually triggerable via Actions > build > Run workflow.
+# Todo push pro master compila os artefatos do monorepo:
+#   client-pc  → Windows (NSIS + MSI + portable) e Linux x64/arm64 (AppImage + .deb)
+#   server     → imagem Docker arm64 pro NAS
+# Tudo sai como artifact da run — nenhum GitHub Release é criado automaticamente.
 on:
   push:
     branches: [master]
   workflow_dispatch:
 
 jobs:
-  build:
+  client-pc:
     strategy:
       fail-fast: false
       matrix:
@@ -23,7 +23,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             label: linux-x64
             librclone_dir: x86_64-unknown-linux-gnu
-          # GitHub-hosted ARM runners (free for public repos since Jan 2025).
+          # Runners ARM hospedados pelo GitHub (grátis pra repo público desde jan/2025).
           - platform: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             label: linux-arm64
@@ -34,9 +34,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Short SHA (7 chars) → vai pro nome do artifact pra distinguir
-      # entre runs. Sem isso, downloads de runs diferentes têm o mesmo
-      # nome e sobrescrevem na pasta local.
+      # SHA curto (7 chars) → entra no nome do artifact pra distinguir runs.
+      # Sem isso, downloads de runs diferentes colidem na pasta local.
       - name: short sha
         id: sha
         shell: bash
@@ -55,8 +54,8 @@ jobs:
         with:
           go-version: "1.22"
 
-      # The librclone build script wants gcc + go. Ubuntu has both by
-      # default; Windows runners ship MSYS2 but mingw isn't on PATH.
+      # O script do librclone precisa de gcc + go. Ubuntu tem os dois; os
+      # runners Windows trazem MSYS2 mas sem mingw no PATH.
       - name: add mingw to PATH (windows)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
@@ -83,16 +82,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: .
 
-      # Cache the produced librclone (~50 MB). Rebuild only when the
-      # build script itself changes.
+      # Cache do librclone produzido (~50 MB). Só rebuilda quando o script muda.
       - name: cache librclone
         id: cache-librclone
         uses: actions/cache@v4
         with:
-          path: src-tauri/lib
-          key: librclone-v1-${{ matrix.target }}-${{ hashFiles('scripts/build-librclone.sh') }}
+          path: vendor/librclone
+          key: librclone-v2-${{ matrix.target }}-${{ hashFiles('scripts/build-librclone.sh') }}
 
       - name: build librclone
         if: steps.cache-librclone.outputs.cache-hit != 'true'
@@ -104,34 +102,34 @@ jobs:
 
       - name: tauri build
         shell: bash
+        working-directory: apps/client-pc
         run: npx tauri build --target ${{ matrix.target }}
 
-      # Tauri produces installers (msi/nsis on win, appimage/deb on linux).
-      # For Windows we also want a portable zip — just the .exe + librclone.dll,
-      # runnable without an installer (WebView2 ships with Win11 by default).
+      # O Tauri gera os instaladores (msi/nsis no win, appimage/deb no linux).
+      # No Windows a gente também quer um portable — só o .exe + a dll, sem
+      # instalador (WebView2 já vem no Win11).
       - name: package windows portable
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
           $portable = "save-sync-portable-windows-x64"
           New-Item -ItemType Directory -Path $portable -Force | Out-Null
-          Copy-Item src-tauri/target/${{ matrix.target }}/release/save-sync.exe $portable/
-          Copy-Item src-tauri/target/${{ matrix.target }}/release/librclone.dll $portable/
+          Copy-Item target/${{ matrix.target }}/release/save-sync.exe $portable/
+          Copy-Item target/${{ matrix.target }}/release/librclone.dll $portable/
           Compress-Archive -Path "$portable/*" -DestinationPath "$portable.zip" -Force
 
-      # Gather just the artifacts we want shipped (drop intermediate build
-      # output, rpms, etc). Globs are nullglob-safe so missing patterns
-      # don't fail the job.
+      # Junta só o que deve ser publicado (descarta build intermediário, rpm etc).
+      # Os globs são nullglob-safe: padrão sem match não quebra o job.
       - name: collect artifacts
         shell: bash
         run: |
           mkdir -p dist
           shopt -s nullglob
           for f in \
-            src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi \
-            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe \
-            src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage \
-            src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb \
+            target/${{ matrix.target }}/release/bundle/msi/*.msi \
+            target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe \
+            target/${{ matrix.target }}/release/bundle/appimage/*.AppImage \
+            target/${{ matrix.target }}/release/bundle/deb/*.deb \
             save-sync-portable-*.zip
           do
             cp "$f" dist/
@@ -143,3 +141,73 @@ jobs:
           name: save-sync-${{ matrix.label }}-${{ steps.sha.outputs.short }}
           path: dist/*
           if-no-files-found: warn
+
+  server:
+    # Runner arm64 nativo: o NAS é RK3588. Compilar Rust sob QEMU levaria
+    # dezenas de minutos, então a imagem só empacota o que é buildado aqui.
+    runs-on: ubuntu-22.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: short sha
+        id: sha
+        run: echo "short=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      # O server carrega o librclone em runtime pro backup off-site, então a
+      # imagem precisa do .so — mesmo artefato que o client usa.
+      - name: cache librclone
+        id: cache-librclone
+        uses: actions/cache@v4
+        with:
+          path: vendor/librclone
+          key: librclone-v2-aarch64-unknown-linux-gnu-${{ hashFiles('scripts/build-librclone.sh') }}
+
+      - name: build librclone
+        if: steps.cache-librclone.outputs.cache-hit != 'true'
+        run: bash scripts/build-librclone.sh
+
+      - name: npm ci
+        run: npm ci
+
+      - name: build web ui
+        run: npm run build
+
+      - name: build server
+        run: cargo build --release -p save-sync-server
+
+      - name: assemble docker context
+        run: |
+          mkdir -p dist
+          cp target/release/save-sync-server dist/
+          cp vendor/librclone/aarch64-unknown-linux-gnu/librclone.so dist/
+          cp -r apps/web/build dist/web
+          ls -la dist/
+
+      - name: build image
+        run: |
+          docker build -f docker/Dockerfile -t save-sync-server:${{ steps.sha.outputs.short }} dist/
+          docker save save-sync-server:${{ steps.sha.outputs.short }} \
+            | gzip > save-sync-server-arm64-${{ steps.sha.outputs.short }}.tar.gz
+          ls -lh save-sync-server-arm64-*.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: save-sync-server-arm64-${{ steps.sha.outputs.short }}
+          path: save-sync-server-arm64-*.tar.gz
+          if-no-files-found: error

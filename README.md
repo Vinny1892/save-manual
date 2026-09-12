@@ -4,7 +4,32 @@ Replicação de save data entre instalações de emuladores (eden / rpcs3 / pcsx
 com destino opcional em **qualquer remote do rclone** (S3, R2, B2, MinIO, etc)
 embarcado in-process via librclone.
 
-Tauri 2 + SvelteKit + Rust. UI estética CRT/terminal com 3 temas (dark / light / blue).
+Monorepo com três entregáveis em volta de um núcleo compartilhado:
+
+| Componente | O que é | Estado |
+|---|---|---|
+| `apps/server` | Server que roda em Docker no NAS. Dono do storage, do histórico e da web UI, com login. | esqueleto |
+| `apps/client-pc` | Client de PC: UI Tauri 2 + agente local (watcher de filesystem e de processo). | funcional |
+| `apps/android` | Client Android nativo (Kotlin). | não iniciado |
+| `apps/web` | UI SvelteKit — servida pelo server e embutida no client de PC. | funcional |
+| `crates/core` | Domínio compartilhado: detecção, parsing de saves, backends, rclone. Zero Tauri. | funcional |
+
+Rust + SvelteKit. UI estética CRT/terminal com 3 temas (dark / light / blue).
+
+## Por que essa divisão
+
+O watcher de filesystem e o de processo têm que rodar **na máquina onde o
+emulador está** — um server no NAS não enxerga o `%APPDATA%` do teu PC nem o
+processo do emulador rodando nele. Por isso o client existe e não é opcional.
+
+O que o server centraliza é o que faz sentido centralizar: o storage, o
+histórico com retenção, a resolução de título (as title DBs somam 93 MB e
+antes eram baixadas por cada instalação) e a UI, acessível de qualquer browser
+— inclusive do celular, pra administrar sem precisar do PC ligado.
+
+Os clients falam **um protocolo HTTP só**. Nem SMB nem rclone entram nesse
+caminho: nenhum dos dois é viável de dentro de um app Android. O rclone
+continua no server, pro backup off-site opcional em S3/R2.
 
 ---
 
@@ -17,7 +42,7 @@ Pré-requisitos:
 - Para construir `librclone` localmente: Go 1.21+, gcc (MinGW-w64 no Windows), Git
 
 ```bash
-# 1. dependências do frontend
+# 1. dependências do frontend (instala os dois workspaces npm de uma vez)
 npm install
 
 # 2. build librclone (~2-3 min, primeira vez clona ~30 MB do rclone)
@@ -26,8 +51,31 @@ npm install
 #    Linux/macOS:
 bash scripts/build-librclone.sh
 
-# 3. dev mode
+# 3. client de PC em dev mode
 npm run tauri dev
+```
+
+Outros alvos:
+
+```bash
+npm run build                   # só a web UI  → apps/web/build
+npm run check                   # svelte-check
+cargo test --workspace          # 81 testes (40 no core, 41 no client)
+cargo run -p save-sync-server   # server local (ver env vars abaixo)
+```
+
+O server lê três variáveis, com defaults pensados pro container:
+
+| Variável | Default | O que é |
+|---|---|---|
+| `SAVE_SYNC_ADDR` | `0.0.0.0:8787` | endereço de escuta |
+| `SAVE_SYNC_WEB` | `/srv/web` | diretório da SPA buildada |
+| `SAVE_SYNC_DATA` | `/data` | raiz dos dados persistentes |
+
+Rodando fora do Docker, aponta os dois caminhos pra árvore local:
+
+```bash
+SAVE_SYNC_WEB=apps/web/build SAVE_SYNC_DATA=./.data cargo run -p save-sync-server
 ```
 
 A primeira execução do app baixa duas bases de dados em background (~93 MB
@@ -64,48 +112,65 @@ if ($cur -notlike "*$add*") {
 
 ## Estrutura
 
+Workspace cargo (3 crates) + workspaces npm (2 pacotes) na mesma árvore.
+
 ```
 save-sync/
+├── Cargo.toml                     # workspace: core + client-pc + server
+├── package.json                   # workspaces npm: apps/web + apps/client-pc
 ├── icon.svg                       # ícone do app (cartucho âmbar + LED verde)
+│
+├── crates/core/src/               # domínio compartilhado — nada de Tauri/HTTP/UI aqui
+│   ├── db.rs                      # SQLite (rusqlite) — schema dos emuladores
+│   ├── detect.rs                  # auto-detecção de paths por emulador
+│   ├── saves.rs                   # listagem/sync de saves (eden/rpcs3/pcsx2)
+│   ├── ps2mc.rs                   # parser de .ps2 (memcard PS2, ECC + FAT)
+│   ├── ps2db.rs                   # download/parse PCSX2 GameIndex.yaml
+│   ├── titledb.rs                 # download/parse blawar US.en.json (Switch)
+│   ├── sync.rs                    # filesystem watcher + bulk sync (eden custom)
+│   ├── backend.rs                 # enum Backend (Local | Rclone) — abstração de destino
+│   └── rclone.rs                  # FFI dynamic load do librclone + helpers S3
+│
+├── apps/
+│   ├── web/                       # UI SvelteKit (servida pelo server, embutida no Tauri)
+│   │   ├── src/app.css            # tokens CSS por tema
+│   │   └── src/routes/
+│   │       ├── +layout.svelte     # title bar sticky + listener emulator-changed
+│   │       ├── +page.svelte       # listagem de unidades (home)
+│   │       └── emulator/[id]/
+│   │           ├── +page.svelte   # detalhe da unit
+│   │           └── saves/
+│   │               ├── +page.svelte              # lista de saves (grid/list)
+│   │               └── [raw_id]/
+│   │                   ├── +page.svelte          # detalhe de save (eden/rpcs3)
+│   │                   └── games/
+│   │                       ├── +page.svelte      # saves dentro do memcard PS2
+│   │                       └── [save_name]/+page.svelte   # save PS2 (read-only)
+│   │
+│   ├── client-pc/                 # client de PC
+│   │   ├── package.json           # orquestra o build do Tauri
+│   │   └── src-tauri/
+│   │       ├── build.rs           # tauri-build + stage da lib do librclone
+│   │       ├── icons/             # gerados por `tauri icon`
+│   │       └── src/lib.rs         # comandos Tauri, AppState, watchers locais
+│   │
+│   ├── server/src/main.rs         # axum — HTTP, web UI, API de sync (em construção)
+│   └── android/                   # client Kotlin (placeholder)
+│
+├── docker/                        # Dockerfile arm64 + compose pro NAS
 ├── scripts/
 │   ├── build-librclone.ps1        # build local Windows
 │   └── build-librclone.sh         # build CI Linux/macOS
-├── src/                           # frontend SvelteKit
-│   ├── app.css                    # tokens CSS por tema
-│   ├── app.html
-│   ├── lib/
-│   │   ├── store.ts               # store Svelte do estado dos emuladores
-│   │   └── theme.ts               # toggle dark/light/blue
-│   └── routes/
-│       ├── +layout.svelte         # title bar sticky + listener emulator-changed
-│       ├── +page.svelte           # listagem de unidades (home)
-│       └── emulator/[id]/
-│           ├── +page.svelte       # detalhe da unit
-│           └── saves/
-│               ├── +page.svelte   # lista de saves (grid/list, eden+rpcs3+pcsx2)
-│               └── [raw_id]/
-│                   ├── +page.svelte             # detalhe de save (eden/rpcs3)
-│                   └── games/
-│                       ├── +page.svelte         # saves dentro do memcard PS2
-│                       └── [save_name]/+page.svelte  # detalhe de save PS2 (read-only)
-└── src-tauri/
-    ├── build.rs                   # tauri-build + stage da DLL do librclone
-    ├── icons/                     # gerados por `tauri icon`
-    ├── lib/<triple>/              # librclone artifacts (gitignored)
-    │   ├── librclone.dll/.so/.dylib
-    │   └── librclone.h
-    └── src/
-        ├── lib.rs                 # entry-point: setup, AppState, comandos Tauri
-        ├── db.rs                  # SQLite (rusqlite) — schema dos emuladores
-        ├── detect.rs              # auto-detecção de paths por emulador
-        ├── saves.rs               # listagem/sync de saves (eden/rpcs3/pcsx2)
-        ├── ps2mc.rs               # parser de .ps2 (memcard PS2, ECC + FAT)
-        ├── ps2db.rs               # download/parse PCSX2 GameIndex.yaml
-        ├── titledb.rs             # download/parse blawar US.en.json (Switch)
-        ├── sync.rs                # filesystem watcher + bulk sync (eden custom)
-        ├── backend.rs             # enum Backend (Local | Rclone) — abstração de destino
-        └── rclone.rs              # FFI dynamic load do librclone + helpers S3
+└── vendor/                        # gitignored
+    ├── librclone/<triple>/        # librclone.{dll,so,dylib} + .h — compartilhado
+    └── rclone-src/                # clone do rclone usado pelo build script
 ```
+
+**Onde os artefatos do librclone moram**: em `vendor/librclone/<triple>/`, na
+raiz do workspace, e não dentro de um crate — client de PC e server usam o
+mesmo arquivo. O `build.rs` do client copia de lá pro lado do binário
+(`target/<profile>/`) e pro `_bundle_lib/`, que é o que o bundler do Tauri
+empacota no .deb/AppImage/MSI.
 
 ---
 
@@ -337,7 +402,9 @@ gatilho do local (sync now / watcher / proc-watch).
 
 ### CI / releases
 
-Workflow em `.github/workflows/build.yml` roda em todo push pro `master` (e via dispatch manual). Matrix de 3 plataformas em paralelo:
+Workflow em `.github/workflows/build.yml` roda em todo push pro `master` (e via dispatch manual). Dois jobs independentes:
+
+**`client-pc`** — matrix de 3 plataformas em paralelo:
 
 | Plataforma | Runner | Bundles |
 |---|---|---|
@@ -345,17 +412,34 @@ Workflow em `.github/workflows/build.yml` roda em todo push pro `master` (e via 
 | Linux x64 | `ubuntu-22.04` | AppImage · .deb |
 | Linux ARM64 | `ubuntu-22.04-arm` | AppImage · .deb |
 
-Artefatos ficam disponíveis na aba **Actions** do GitHub — cada run tem os bundles agrupados por plataforma (`save-sync-windows-x64`, `save-sync-linux-x64`, `save-sync-linux-arm64`). Não há criação automática de Release. Pra publicar um release oficial, tu baixa os artefatos da run que validou e sobe manualmente.
-
 Cada job:
 1. Checkout + setup Node 20 + Rust stable + Go 1.22
-2. **Cache** do `src-tauri/lib/` (output do `build-librclone.sh`, ~50 MB) — só rebuilda se o script muda
-3. **Cache** do cargo target via `Swatinem/rust-cache@v2`
+2. **Cache** do `vendor/librclone/` (output do `build-librclone.sh`, ~50 MB) — só rebuilda se o script muda
+3. **Cache** do cargo target via `Swatinem/rust-cache@v2` (workspace na raiz)
 4. **Cache** do `node_modules` via `setup-node@v4` (chave = `package-lock.json`)
 5. Roda `bash scripts/build-librclone.sh` (idêntico nas 3 plataformas — script detecta o triple via `uname`)
-6. `npm ci` → `npx tauri build --target <triple>`
+6. `npm ci` → `npx tauri build --target <triple>` de dentro de `apps/client-pc/`
 7. Windows: empacota portable em ZIP
 8. Coleta artefatos em `dist/` e faz upload
+
+**`server`** — roda em `ubuntu-22.04-arm`, runner ARM nativo, porque o NAS alvo
+é RK3588 (arm64) e imagem amd64 não roda nele. Builda a web UI e o binário,
+monta o contexto Docker e sobe a imagem como tarball (`docker save | gzip`).
+
+O `docker/Dockerfile` **não compila nada** — só empacota o que o job já
+produziu. Compilar Rust sob emulação QEMU levaria dezenas de minutos; buildar
+nativo e empacotar leva segundos. Pra subir no NAS:
+
+```bash
+docker load < save-sync-server-arm64-<sha>.tar.gz
+docker compose -f docker/compose.yaml up -d
+```
+
+Artefatos ficam na aba **Actions** do GitHub, agrupados por plataforma
+(`save-sync-windows-x64`, `save-sync-linux-x64`, `save-sync-linux-arm64`,
+`save-sync-server-arm64`), com o SHA curto no nome pra não colidirem entre
+runs. Não há criação automática de Release — pra publicar, tu baixa os
+artefatos da run que validou e sobe manualmente.
 
 Trigger manual via `Actions > build > Run workflow`. Tempo médio: ~10 min na primeira run, ~3-5 min com caches.
 
@@ -512,10 +596,19 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 - [x] **Suporte a controle**: Gamepad API nativa do WebView2, mapping padrão Xbox (A=select / B=back / DPad+stick=nav espacial 2D / L1+R1=pageUp/Down / Start=reservado). Indicador ⎚ no header quando conectado
 - [x] **CI**: GitHub Actions builda em todo push pro master — Windows (NSIS installer + MSI + portable ZIP), Linux x64 e ARM64 (AppImage + .deb). Artefatos disponíveis na aba Actions; publicação manual de releases
 - [x] Testes unitários (81 testes em backend/db/lib/rclone — `cargo test --lib`)
+- [x] **Monorepo**: workspace cargo (`core` + `client-pc` + `server`) e workspaces npm (`web` + `client-pc`); librclone compartilhado em `vendor/`; CI com job de imagem Docker arm64
+
+### Próximas fases — server + clients
+
+- [ ] **Extrair o miolo do `lib.rs` pro core**: `do_sync`, history, prune e resolução de conflito ainda moram no crate do Tauri. O server precisa deles, então saem de lá junto com os 41 testes
+- [ ] **Protocolo HTTP**: manifesto (`path`, `size`, `mtime`, hash) → diff → upload/download → commit. Conflito mantém a semântica atual (mtime mais novo ganha, perdedor preservado)
+- [ ] **Server**: API do protocolo, login com usuário e senha, histórico/retenção server-side, title DBs centralizadas, SSE de progresso
+- [ ] **Web UI**: transporte HTTP (`invoke` → `fetch`, `listen` → `EventSource`), tela de login, navegador de diretórios server-side no lugar do picker nativo
+- [ ] **Client de PC**: vira agente + UI — watcher e proc-watch locais alimentando o protocolo
+- [ ] **Client Android** (Kotlin): bloqueado pela restrição de `Android/data` — ver `apps/android/README.md`
 - [ ] OAuth flow (Drive, Dropbox, OneDrive) via `config/create` + callback HTTP
-- [ ] Linux build + AppImage via CI
-- [ ] Android port (REST nativo, sem rclone — limitação Android)
 - [ ] Duckstation (PS1) — list-only, similar ao pcsx2
+- [ ] Corrigir o pacote do eden Android em `detect.rs` (`org.eden.android` → `dev.eden.eden_emulator`) — o caminho atual nunca casou
 
 ---
 
@@ -599,11 +692,12 @@ pra sempre".
 ## Testes
 
 ```bash
-cd src-tauri
-cargo test --lib
+cargo test --workspace          # tudo
+cargo test -p save-sync-core    # só o domínio (40) — rápido, sem compilar Tauri
+cargo test -p save-sync         # só o client (41)
 ```
 
-Cobertura atual (81 testes):
+Cobertura atual (81 testes — 40 em `crates/core`, 41 em `apps/client-pc`):
 
 | Módulo | Cobertura |
 |---|---|

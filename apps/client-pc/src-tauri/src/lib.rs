@@ -1,12 +1,9 @@
-mod backend;
-mod db;
-mod detect;
-mod ps2db;
-mod ps2mc;
-mod rclone;
-mod saves;
-mod sync;
-mod titledb;
+//! Camada Tauri do client de PC. O domínio mora em `save-sync-core`; o que
+//! fica aqui é o que só existe no client: os comandos expostos à UI, o
+//! estado da aplicação e os watchers locais (filesystem e processo), que
+//! precisam rodar na máquina onde o emulador está.
+
+use save_sync_core::{backend, db, detect, ps2db, ps2mc, rclone, saves, sync, titledb};
 
 use std::collections::HashMap;
 use std::ffi::OsStr;

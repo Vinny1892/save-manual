@@ -40,7 +40,9 @@ build() {
   # agora inclui librclone.so como resource em /usr/lib/<id>/, e o
   # rclone.rs tem fallback multi-path pra encontrá-lo após instalação.
   npm ci
-  npx tauri build --target $(uname -m)-unknown-linux-gnu --bundles deb
+  # O projeto Tauri vive em apps/client-pc no monorepo; o target dir é o do
+  # workspace, na raiz.
+  (cd apps/client-pc && npx tauri build --target $(uname -m)-unknown-linux-gnu --bundles deb)
 }
 
 package() {
@@ -50,7 +52,7 @@ package() {
   # binary em /usr/bin/, librclone.so em /usr/lib/com.savesync.app/,
   # .desktop e ícones nos lugares-padrão).
   local deb
-  deb=$(ls src-tauri/target/*/release/bundle/deb/*.deb 2>/dev/null | head -1)
+  deb=$(ls target/*/release/bundle/deb/*.deb 2>/dev/null | head -1)
   [ -n "$deb" ] || { echo "no .deb produced by tauri build" >&2; return 1; }
 
   bsdtar -xf "$deb" -C "$srcdir"

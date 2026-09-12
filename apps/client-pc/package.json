@@ -1,0 +1,14 @@
+{
+  "name": "@save-sync/client-pc",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Client de PC (Tauri). A UI vem de apps/web; este pacote só orquestra o build do Tauri.",
+  "scripts": {
+    "dev:web": "npm --prefix ../.. run dev -w @save-sync/web",
+    "build:web": "npm --prefix ../.. run build -w @save-sync/web",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

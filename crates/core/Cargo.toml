@@ -1,0 +1,21 @@
+[package]
+name = "save-sync-core"
+description = "Núcleo compartilhado do save-sync: detecção de paths, leitura de saves, destinos de backup e rclone."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "save_sync_core"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true
+reqwest.workspace = true
+notify.workspace = true
+fs_extra.workspace = true
+dirs.workspace = true
+libloading.workspace = true

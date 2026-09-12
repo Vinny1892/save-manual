@@ -1,0 +1,14 @@
+# Deploy no NAS. `docker compose up -d` depois de carregar a imagem
+# (docker load < save-sync-server-arm64.tar).
+services:
+  save-sync-server:
+    image: save-sync-server:latest
+    container_name: save-sync-server
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      # Ajusta o caminho do host pro teu volume do array — não deixa no eMMC.
+      - /volume1/docker/save-sync:/data
+    environment:
+      RUST_LOG: info

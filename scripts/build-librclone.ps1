@@ -1,6 +1,6 @@
 # Build librclone (rclone as a C-shared library) for the current host.
 #
-# Output: src-tauri\lib\<rust-target-triple>\librclone.{dll,so,dylib} + librclone.h
+# Output: vendor\librclone\<rust-target-triple>\librclone.{dll,so,dylib} + librclone.h
 #
 # Required tools (install once via winget):
 #   winget install -e --id GoLang.Go
@@ -15,8 +15,8 @@ $ErrorActionPreference = "Stop"
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $RcloneVersion = if ($env:RCLONE_VERSION) { $env:RCLONE_VERSION } else { "v1.69.0" }
-$SrcDir = if ($env:RCLONE_SRC) { $env:RCLONE_SRC } else { Join-Path $Root "build\rclone-src" }
-$OutBase = Join-Path $Root "src-tauri\lib"
+$SrcDir = if ($env:RCLONE_SRC) { $env:RCLONE_SRC } else { Join-Path $Root "vendor\rclone-src" }
+$OutBase = Join-Path $Root "vendor\librclone"
 
 if ($IsWindows -or $env:OS -eq "Windows_NT") {
     $Triple = "x86_64-pc-windows-gnu"

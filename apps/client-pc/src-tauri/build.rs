@@ -23,7 +23,17 @@ fn stage_librclone() {
     };
 
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let lib_root = manifest_dir.join("lib");
+
+    // No monorepo o artefato do librclone é compartilhado (o server também
+    // usa rclone, pro backup off-site), então mora na raiz do workspace em
+    // vendor/librclone/<triple>/ em vez de dentro deste crate.
+    // apps/client-pc/src-tauri -> apps/client-pc -> apps -> <workspace>
+    let workspace_root = manifest_dir
+        .ancestors()
+        .nth(3)
+        .expect("manifest fora do layout esperado do workspace")
+        .to_path_buf();
+    let lib_root = workspace_root.join("vendor").join("librclone");
 
     // Search any subdir of lib/ for the library — accepts both
     // x86_64-pc-windows-gnu (built by our script) and x86_64-pc-windows-msvc
@@ -39,7 +49,7 @@ fn stage_librclone() {
 
     let Some(lib_path) = lib_path else {
         panic!(
-            "librclone not found in {} - run scripts/build-librclone.ps1 (Windows) or .sh (Unix) first",
+            "librclone não encontrado em {} — rode scripts/build-librclone.ps1 (Windows) ou .sh (Unix) primeiro",
             lib_root.display()
         );
     };
