@@ -230,6 +230,39 @@ UI, e as três ações (`keep_current`, `use_conflict`, `keep_both`) continuam
 valendo — agora executadas no server, sobre o mesmo código de
 `core::history`.
 
+### Edição contra deleção
+
+O caso em que um lado **editou** e o outro **apagou** o mesmo arquivo desde o
+baseline não é simétrico aos de cima, e a regra é:
+
+> **edição sempre vence deleção.**
+
+Se o client editou e o server tinha apagado, o arquivo sobe e ressuscita. Se
+o server tem versão nova e o client tinha apagado, o arquivo desce e volta.
+
+O raciocínio é o mesmo que rege o resto: apagar um save que alguém acabou de
+modificar é perda de dado irreversível, enquanto ressuscitar um save que
+alguém queria apagado custa um delete a mais. Os dois erros não têm o mesmo
+peso, então a regra não é simétrica de propósito.
+
+Isso vale só quando as duas coisas acontecem **no mesmo intervalo** entre
+syncs. Deleção que o outro lado não contradisse propaga normalmente, como
+descrito na seção 7.
+
+### Onde o perdedor fica
+
+O `.conflictN` entra no conjunto sincronizado como arquivo comum, então ele
+aparece nos dois lados no fim do mesmo ciclo:
+
+| Quem venceu | O que acontece |
+|---|---|
+| client | o server renomeia a versão dele pra `.conflictN` (sem transferir), o client sobe a sua, e o `.conflictN` volta pro client na lista de `download` |
+| server | o client renomeia a versão local pra `.conflictN` e sobe esse arquivo, e baixa a versão do server pro path original |
+
+O plano é explícito quanto a isso: o `loser_path` aparece em `upload` ou em
+`download` conforme o lado que segura o perdedor, pra que o client não
+precise inferir nada.
+
 Emuladores file-based (pcsx2) mantêm a duplicação automática:
 `Mcd001.ps2.conflict1` vira `Mcd001-conflict1.ps2` no fim do commit, porque o
 emulador precisa enxergar como memcard válido. É o

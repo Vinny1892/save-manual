@@ -27,6 +27,9 @@ vite.config.ts.timestamp-*
 /apps/android/.gradle
 /apps/android/local.properties
 
+# dados do teste e2e do protocolo (scripts/e2e-protocol.sh)
+/.e2e/
+
 # config local / rascunho
 /.claude/
 /possiveisicones/

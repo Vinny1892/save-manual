@@ -8,7 +8,7 @@ Monorepo com três entregáveis em volta de um núcleo compartilhado:
 
 | Componente | O que é | Estado |
 |---|---|---|
-| `apps/server` | Server que roda em Docker no NAS. Dono do storage, do histórico e da web UI, com login. | esqueleto |
+| `apps/server` | Server que roda em Docker no NAS. Dono do storage, do índice e do histórico. API de sync funcional; login e UI de admin pendentes. | parcial |
 | `apps/client-pc` | Client de PC: UI Tauri 2 + agente local (watcher de filesystem e de processo). | funcional |
 | `apps/android` | Client Android nativo (Kotlin). | não iniciado |
 | `apps/web` | UI SvelteKit — servida pelo server e embutida no client de PC. | funcional |
@@ -61,7 +61,7 @@ Outros alvos:
 ```bash
 npm run build                   # só a web UI  → apps/web/build
 npm run check                   # svelte-check
-cargo test --workspace          # 81 testes, todos em crates/core
+cargo test --workspace          # 155 testes (108 no core, 47 no server)
 cargo run -p save-sync-server   # server local (ver env vars abaixo)
 ```
 
@@ -157,13 +157,19 @@ save-sync/
 │   │       ├── icons/             # gerados por `tauri icon`
 │   │       └── src/lib.rs         # comandos Tauri, AppState, watchers locais
 │   │
-│   ├── server/src/main.rs         # axum — HTTP, web UI, API de sync (em construção)
+│   ├── server/src/                # axum — roda em Docker no NAS
+│   │   ├── main.rs                # bootstrap, SPA estática, /health, --pair
+│   │   ├── api.rs                 # handlers: pair, plan, blob, commit
+│   │   ├── db.rs                  # índice de arquivos, devices, sessões
+│   │   ├── storage.rs             # validação de path, staging, commit atômico
+│   │   └── auth.rs                # tokens de device e códigos de pareamento
 │   └── android/                   # client Kotlin (placeholder)
 │
 ├── docker/                        # Dockerfile arm64 + compose pro NAS
 ├── scripts/
 │   ├── build-librclone.ps1        # build local Windows
-│   └── build-librclone.sh         # build CI Linux/macOS
+│   ├── build-librclone.sh         # build CI Linux/macOS
+│   └── e2e-protocol.sh            # ciclo completo do protocolo, server de verdade
 └── vendor/                        # gitignored
     ├── librclone/<triple>/        # librclone.{dll,so,dylib} + .h — compartilhado
     └── rclone-src/                # clone do rclone usado pelo build script
@@ -605,7 +611,8 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 
 - [x] **Extrair o miolo do `lib.rs` pro core** ([#1](https://github.com/Vinny1892/save-manual/issues/1)): `do_sync`, history, prune e conflitos viraram `core::engine` e `core::history`; o progresso sai por `ProgressSink` em vez de `AppHandle`. O `lib.rs` do client caiu de 2246 pra 1184 linhas e os 81 testes passaram todos pro core
 - [x] **Protocolo HTTP** ([#2](https://github.com/Vinny1892/save-manual/issues/2)): especificado em [`docs/protocol.md`](docs/protocol.md) — estado por `rev` monotônico + baseline no client (o que os listing files do bisync faziam), ciclo plan → transfer → commit, tombstones pra deleção, SHA-256, transfer por arquivo
-- [ ] **Server**: API do protocolo, login com usuário e senha, histórico/retenção server-side, title DBs centralizadas, SSE de progresso
+- [x] **Server — API do protocolo** ([#3](https://github.com/Vinny1892/save-manual/issues/3)): pareamento, `plan`/`blob`/`commit`, índice em SQLite, staging com verificação de hash na ingestão, commit atômico com snapshot de history e delta. Pareamento por `--pair` até o login existir
+- [ ] **Server**: login com usuário e senha, histórico/retenção server-side, title DBs centralizadas, SSE de progresso
 - [ ] **Web UI**: transporte HTTP (`invoke` → `fetch`, `listen` → `EventSource`), tela de login, navegador de diretórios server-side no lugar do picker nativo
 - [ ] **Client de PC**: vira agente + UI — watcher e proc-watch locais alimentando o protocolo
 - [ ] **Client Android** (Kotlin): bloqueado pela restrição de `Android/data` — ver `apps/android/README.md`
@@ -696,10 +703,15 @@ pra sempre".
 
 ```bash
 cargo test --workspace          # tudo
-cargo test -p save-sync-core    # os 81 — rápido, sem compilar Tauri
+cargo test -p save-sync-core    # só o domínio — rápido, sem compilar Tauri
+cargo test -p save-sync-server  # índice, storage e auth
+
+# ciclo completo do protocolo contra o server rodando de verdade:
+# dois devices pareados, um sobe um save e o outro recebe
+cargo build -p save-sync-server && bash scripts/e2e-protocol.sh
 ```
 
-Cobertura atual (81 testes, todos em `crates/core` — o client virou camada fina e não tem lógica própria pra testar):
+Cobertura atual: **155 testes unitários** (108 em `crates/core`, 47 em `apps/server`) mais **20 checagens end-to-end** no `scripts/e2e-protocol.sh`. O client não tem teste próprio porque não tem lógica própria — virou camada fina sobre o core.
 
 | Módulo | Cobertura |
 |---|---|

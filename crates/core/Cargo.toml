@@ -19,3 +19,6 @@ notify.workspace = true
 fs_extra.workspace = true
 dirs.workspace = true
 libloading.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

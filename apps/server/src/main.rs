@@ -10,7 +10,13 @@
 //!   SAVE_SYNC_WEB     diretório da SPA buildada   (default /srv/web)
 //!   SAVE_SYNC_DATA    raiz dos dados persistentes (default /data)
 
+mod api;
+mod auth;
+mod db;
+mod storage;
+
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
 
 use axum::{routing::get, Json, Router};
@@ -61,6 +67,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     std::fs::create_dir_all(&data_dir)?;
 
+    let conn = db::open(&data_dir.join("save-sync-server.db"))?;
+
+    // `--pair` emite um código e sai. Enquanto o login da web UI não existe
+    // (#4), esta é a única via de pareamento — e é a via segura: emitir
+    // código por endpoint aberto deixaria qualquer um na rede parear um
+    // device. Aqui é preciso `docker exec` no NAS.
+    if std::env::args().any(|a| a == "--pair") {
+        let code = auth::create_pairing_code(&conn)?;
+        println!("código de pareamento: {code}");
+        println!("válido por 10 minutos, uso único");
+        return Ok(());
+    }
+
+    let state = Arc::new(api::AppState {
+        conn: Mutex::new(conn),
+        store: storage::Store::new(&data_dir),
+    });
+
     // A SPA é client-side routed: qualquer path desconhecido cai no
     // index.html e o SvelteKit resolve a rota no browser.
     //
@@ -72,6 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = Router::new()
         .route("/health", get(health))
+        .merge(api::routes(state))
         .fallback_service(spa);
 
     tracing::info!(%addr, web = %web_dir.display(), data = %data_dir.display(), "save-sync-server");

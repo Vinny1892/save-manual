@@ -12,6 +12,7 @@ pub mod db;
 pub mod detect;
 pub mod engine;
 pub mod history;
+pub mod protocol;
 pub mod ps2db;
 pub mod ps2mc;
 pub mod rclone;

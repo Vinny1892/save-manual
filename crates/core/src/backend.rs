@@ -308,13 +308,39 @@ impl Backend {
         }
     }
 
-    /// Take a full snapshot of the live root into `<.history>/<ts>`. Server-
-    /// side copy on cloud backends, plain file copy locally — both go
-    /// through rclone so the call site doesn't branch.
+    /// Take a full snapshot of the live root into `<.history>/<ts>/full`.
+    ///
+    /// `Rclone` uses `sync/copy`, which is a server-side CopyObject on the
+    /// S3 family — no bytes cross the wire. `Local` copies with `fs_extra`
+    /// rather than routing through rclone: the destination is a fresh
+    /// timestamped dir, so rclone's skip-if-identical logic has nothing to
+    /// skip, and going through the FFI would make the server need librclone
+    /// loaded just to copy a directory it already owns.
     pub fn snapshot_full(&self, ts: &str) -> Result<(), String> {
-        let src = self.live_fs();
-        let dst = self.snapshot_full_fs(ts);
-        rclone::copy_fs(&src, &dst)
+        match self {
+            Backend::Local { root } => {
+                if !root.exists() {
+                    // Nada sincronizado ainda: snapshot de árvore vazia é
+                    // no-op, não erro.
+                    return Ok(());
+                }
+                let dst = PathBuf::from(self.snapshot_full_fs(ts));
+                std::fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
+                let opts = fs_extra::dir::CopyOptions {
+                    overwrite: true,
+                    content_only: true,
+                    ..Default::default()
+                };
+                fs_extra::dir::copy(root, &dst, &opts)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }
+            Backend::Rclone { .. } => {
+                let src = self.live_fs();
+                let dst = self.snapshot_full_fs(ts);
+                rclone::copy_fs(&src, &dst)
+            }
+        }
     }
 
 }
@@ -524,6 +550,51 @@ mod tests {
             b.snapshot_delta_fs_at("20260509T143000Z", ""),
             "s3:bucket/saves/.history/eden/20260509T143000Z/delta"
         );
+    }
+
+    #[test]
+    fn local_snapshot_full_copies_tree_without_rclone() {
+        // Importa que este caminho não toque no librclone: o server precisa
+        // tirar snapshot de uma árvore que ele já tem em disco, e carregar
+        // a FFI pra isso seria uma dependência (e um modo de falha) à toa.
+        let tmp = tempfile::tempdir().unwrap();
+        let live = tmp.path().join("eden");
+        std::fs::create_dir_all(live.join("user/save")).unwrap();
+        std::fs::write(live.join("user/save/game.sav"), b"conteudo").unwrap();
+
+        let b = Backend::Local { root: live };
+        b.snapshot_full("2026-09-13T10-00-00Z").unwrap();
+
+        let snap = PathBuf::from(b.snapshot_full_fs("2026-09-13T10-00-00Z"));
+        assert_eq!(
+            std::fs::read(snap.join("user/save/game.sav")).unwrap(),
+            b"conteudo"
+        );
+    }
+
+    #[test]
+    fn local_snapshot_full_on_missing_root_is_noop_not_error() {
+        // Primeiro sync de um emulador que ainda não recebeu nada.
+        let tmp = tempfile::tempdir().unwrap();
+        let b = Backend::Local { root: tmp.path().join("nunca-existiu") };
+        assert!(b.snapshot_full("2026-09-13T10-00-00Z").is_ok());
+    }
+
+    #[test]
+    fn local_snapshot_full_lands_beside_live_not_inside_it() {
+        // Mesma invariante do history_root_is_sibling, mas verificada em
+        // disco: snapshot dentro da árvore viva seria copiado pelo próprio
+        // sync no ciclo seguinte.
+        let tmp = tempfile::tempdir().unwrap();
+        let live = tmp.path().join("eden");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join("a.sav"), b"x").unwrap();
+
+        let b = Backend::Local { root: live.clone() };
+        b.snapshot_full("2026-09-13T10-00-00Z").unwrap();
+
+        let snap = PathBuf::from(b.snapshot_full_fs("2026-09-13T10-00-00Z"));
+        assert!(!snap.starts_with(&live), "snapshot em {snap:?} está dentro de {live:?}");
     }
 
     #[test]
