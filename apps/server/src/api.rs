@@ -140,6 +140,34 @@ impl FromRequestParts<Arc<AppState>> for User {
     }
 }
 
+/// Quem pode **ler** o estado sincronizado: um usuário logado ou um device
+/// pareado.
+///
+/// Aceitar as duas provas não é conveniência, é o que evita um problema
+/// real: dentro da janela do Tauri a origem é `tauri://localhost` e o
+/// server é `http://nas:8787`, então o cookie de sessão só viajaria com
+/// `SameSite=None; Secure` — que exige TLS e quebraria o uso em HTTP na
+/// LAN. O client já tem `device_token`; usar ele pra ler é estritamente
+/// menos privilégio do que já tem pra escrever via sync.
+///
+/// Os endpoints de `/admin` continuam exigindo sessão: parear outro device
+/// ou revogar não é coisa que um device deva poder fazer sozinho.
+pub struct Viewer;
+
+impl FromRequestParts<Arc<AppState>> for Viewer {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        if User::from_request_parts(parts, state).await.is_ok() {
+            return Ok(Viewer);
+        }
+        Device::from_request_parts(parts, state).await.map(|_| Viewer)
+    }
+}
+
 /// `Secure` só entra quando o server está atrás de TLS. Ligar por padrão
 /// quebraria o acesso por HTTP na LAN, que é o caso comum num NAS; deixar
 /// desligado atrás de HTTPS deixaria o cookie viajar em claro. Por isso é
@@ -266,6 +294,158 @@ async fn revoke_device(
     let conn = state.conn.lock().map_err(|_| ApiError::internal("lock"))?;
     auth::revoke_device(&conn, &device_id).map_err(ApiError::internal)?;
     Ok(Json(json!({"status": "revogado"})))
+}
+
+// ─── leitura da árvore viva (exige login) ───────────────────────────────
+
+fn display_name(emu: &str) -> &'static str {
+    match emu {
+        "eden" => "eden",
+        "rpcs3" => "rpcs3",
+        "pcsx2" => "pcsx2",
+        _ => "?",
+    }
+}
+
+fn platform_hint(emu: &str) -> &'static str {
+    match emu {
+        "eden" => "switch",
+        "rpcs3" => "ps3",
+        "pcsx2" => "ps2",
+        _ => "",
+    }
+}
+
+/// Resumo por emulador. O que o server sabe é o que está sincronizado —
+/// paths locais e watchers são do client e não aparecem aqui.
+async fn list_emulators(
+    State(state): State<Arc<AppState>>,
+    _: Viewer,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let conn = state.conn.lock().map_err(|_| ApiError::internal("lock"))?;
+    let mut out = Vec::new();
+    for emu in storage::EMULATORS {
+        let head = db::head_rev(&conn, emu).map_err(ApiError::internal)?;
+        let saves = save_sync_core::saves::list_saves(
+            emu,
+            &state.store.live_root(emu).to_string_lossy(),
+        );
+        let last_sync = db::last_commit_at(&conn, emu)
+            .map_err(ApiError::internal)?
+            .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms))
+            .map(|dt| dt.format("%d/%m/%Y %H:%M:%S").to_string());
+
+        // A forma é a mesma do `EmulatorView` do client, de propósito: a UI
+        // é uma só, e os campos que só existem na máquina do emulador
+        // (paths, watchers, processo) vêm vazios em vez de ausentes. Quem
+        // decide se mostra o controle é o `isTauri()` no front.
+        out.push(json!({
+            "id": emu,
+            "name": display_name(emu),
+            "hint": platform_hint(emu),
+            "source_path": "",
+            "dest_kind": "local",
+            "dest_remote": "",
+            "dest_path": "",
+            "enabled": true,
+            "watching": false,
+            "proc_watching": false,
+            "process_name": "",
+            "last_sync": last_sync,
+            "last_error": null,
+            // Acréscimos que só o server sabe.
+            "head_rev": head,
+            "save_count": saves.len(),
+            "synced": head > 0,
+        }));
+    }
+    Ok(Json(json!({ "emulators": out })))
+}
+
+async fn list_saves(
+    State(state): State<Arc<AppState>>,
+    _: Viewer,
+    Path(emu): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    check_emulator(&emu)?;
+    // Reusa o mesmo parser do client — a árvore viva tem a estrutura que
+    // `core::saves` já sabe ler, porque foi ela que o sync replicou.
+    let saves = save_sync_core::saves::list_saves(
+        &emu,
+        &state.store.live_root(&emu).to_string_lossy(),
+    );
+    Ok(Json(json!({ "saves": saves })))
+}
+
+async fn get_save(
+    State(state): State<Arc<AppState>>,
+    _: Viewer,
+    Path((emu, raw_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    check_emulator(&emu)?;
+    let root = state.store.live_root(&emu).to_string_lossy().into_owned();
+    save_sync_core::saves::get_save(&emu, &root, &raw_id)
+        .map(|s| Json(json!(s)))
+        .ok_or(ApiError::new(StatusCode::NOT_FOUND, "save_not_found"))
+}
+
+async fn get_settings(
+    State(state): State<Arc<AppState>>,
+    _: Viewer,
+    Path(emu): Path<String>,
+) -> Result<Json<db::HistoryPolicy>, ApiError> {
+    check_emulator(&emu)?;
+    let conn = state.conn.lock().map_err(|_| ApiError::internal("lock"))?;
+    db::history_policy(&conn, &emu)
+        .map(Json)
+        .map_err(ApiError::internal)
+}
+
+async fn set_settings(
+    State(state): State<Arc<AppState>>,
+    _: Viewer,
+    Path(emu): Path<String>,
+    Json(policy): Json<db::HistoryPolicy>,
+) -> Result<Json<db::HistoryPolicy>, ApiError> {
+    check_emulator(&emu)?;
+    let conn = state.conn.lock().map_err(|_| ApiError::internal("lock"))?;
+    db::set_history_policy(&conn, &emu, &policy)
+        .map(Json)
+        .map_err(|e| match e.as_str() {
+            "history_mode_required" => {
+                ApiError::new(StatusCode::BAD_REQUEST, "history_mode_required")
+            }
+            _ => ApiError::internal(e),
+        })
+}
+
+/// Conflitos pendentes: todo `.conflictN` que ainda está na árvore viva.
+async fn list_conflicts(
+    State(state): State<Arc<AppState>>,
+    _: Viewer,
+    Path(emu): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    check_emulator(&emu)?;
+    let conn = state.conn.lock().map_err(|_| ApiError::internal("lock"))?;
+    let live = db::live_paths(&conn, &emu).map_err(ApiError::internal)?;
+
+    let mut out = Vec::new();
+    for path in &live {
+        let Some((original, num)) = save_sync_core::history::strip_conflict_marker(path) else {
+            continue;
+        };
+        // Perdedor órfão (o vencedor sumiu) não é conflito acionável — não
+        // há "keep current" possível.
+        if !live.contains(&original) {
+            continue;
+        }
+        out.push(json!({
+            "path": original,
+            "conflict_path": path,
+            "conflict_num": num,
+        }));
+    }
+    Ok(Json(json!({ "conflicts": out })))
 }
 
 // ─── pareamento ─────────────────────────────────────────────────────────
@@ -713,6 +893,11 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/v1/admin/pairing-code", post(create_pairing_code))
         .route("/api/v1/admin/devices", get(list_devices))
         .route("/api/v1/admin/devices/{id}", delete(revoke_device))
+        .route("/api/v1/emulators", get(list_emulators))
+        .route("/api/v1/emulators/{emu}/saves", get(list_saves))
+        .route("/api/v1/emulators/{emu}/saves/{raw_id}", get(get_save))
+        .route("/api/v1/emulators/{emu}/settings", get(get_settings).put(set_settings))
+        .route("/api/v1/emulators/{emu}/conflicts", get(list_conflicts))
         .route("/api/v1/pair", post(pair))
         .route("/api/v1/sync/{emu}/plan", post(plan))
         .route("/api/v1/sync/{emu}/blob", put(put_blob).get(get_blob))

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from "$app/stores";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "$lib/rpc";
   import { emulators } from "$lib/store";
   import { derived } from "svelte/store";
 

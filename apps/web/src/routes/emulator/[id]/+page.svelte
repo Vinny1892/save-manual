@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke, isTauri } from "$lib/rpc";
   import { listen } from "@tauri-apps/api/event";
   import { open } from "@tauri-apps/plugin-dialog";
   import { emulators, type EmulatorView } from "$lib/store";
@@ -462,6 +462,11 @@
       u2.then((fn) => fn());
     };
   });
+
+  // Cards que dependem da maquina onde o emulador roda (paths, watchers,
+  // processo) so existem no client de PC — no browser eles nem aparecem.
+  const native = isTauri();
+
 </script>
 
 <section class="topnav">
@@ -494,6 +499,7 @@
     <p class="head-id">{$_("emulator.unit_id_label", { values: { id: emu.id } })}</p>
   </section>
 
+  {#if native}
   <section class="card ops">
     <header class="card-head">
       <span class="card-tag">{$_("emulator.ops.tag")}</span>
@@ -531,6 +537,7 @@
       </button>
     </div>
   </section>
+  {/if}
 
   {#if debugMsg}
     <section class="alert">
@@ -547,6 +554,7 @@
     <p class="hint">{emu.hint}</p>
   </section>
 
+  {#if native}
   <section class="card">
     <header class="card-head">
       <span class="card-tag">{$_("emulator.paths.tag")}</span>
@@ -704,7 +712,9 @@
       </button>
     </div>
   </section>
+  {/if}
 
+  {#if native}
   <section class="card">
     <header class="card-head">
       <span class="card-tag">{$_("emulator.status.tag")}</span>
@@ -734,7 +744,9 @@
       </div>
     {/if}
   </section>
+  {/if}
 
+  {#if native}
   <section class="card">
     <header class="card-head">
       <span class="card-tag">{$_("emulator.proc_watch.tag")}</span>
@@ -776,6 +788,7 @@
       </span>
     </div>
   </section>
+  {/if}
 
   <section class="card" class:has-conflicts={conflicts.length > 0}>
     <header class="card-head">

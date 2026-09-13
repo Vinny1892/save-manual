@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use rusqlite::{params, Connection, OptionalExtension};
 use save_sync_core::protocol::{IndexEntry, Rev};
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 4;
 
 pub fn open(path: &std::path::Path) -> Result<Connection, String> {
     let conn = Connection::open(path).map_err(|e| e.to_string())?;
@@ -137,9 +137,127 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
 
+    if version < 3 {
+        // Política de histórico por emulador. É a mesma ideia do
+        // `history_settings` do client, menos o `bisync_initialized`, que
+        // não existe mais — quem guarda estado de baseline agora é o
+        // `device_state.last_rev`.
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS history_settings (
+                emulator_id         TEXT PRIMARY KEY,
+                enabled             INTEGER NOT NULL DEFAULT 1,
+                incremental_enabled INTEGER NOT NULL DEFAULT 1,
+                full_enabled        INTEGER NOT NULL DEFAULT 0,
+                retention_days      INTEGER NOT NULL DEFAULT 30,
+                retention_max_mb    INTEGER NOT NULL DEFAULT 500
+            );
+            ",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    if version < 4 {
+        // Quando foi o último commit deste emulador. Derivar do índice não
+        // serviria: lá o `mtime` é o do arquivo no device de origem, não o
+        // instante em que o server aceitou a mudança.
+        conn.execute(
+            "ALTER TABLE emulator_state ADD COLUMN last_commit_at INTEGER",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ─── política de histórico ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HistoryPolicy {
+    pub enabled: bool,
+    pub incremental_enabled: bool,
+    pub full_enabled: bool,
+    pub retention_days: i64,
+    pub retention_max_mb: i64,
+}
+
+impl HistoryPolicy {
+    /// Emulador file-based (pcsx2) só suporta full: a unidade de save é um
+    /// binário inteiro, e o incremental degeneraria pra full de qualquer
+    /// jeito. Mesma classificação que o core já faz.
+    pub fn defaults_for(emu: &str) -> HistoryPolicy {
+        let file_based = !save_sync_core::db::supports_incremental_history(emu);
+        HistoryPolicy {
+            enabled: true,
+            incremental_enabled: !file_based,
+            full_enabled: file_based,
+            retention_days: 30,
+            retention_max_mb: 500,
+        }
+    }
+
+    fn validate(&self, emu: &str) -> Result<HistoryPolicy, String> {
+        let mut out = self.clone();
+        // O servidor é a fonte da verdade da classificação, mesmo que o
+        // client mande outra coisa.
+        if !save_sync_core::db::supports_incremental_history(emu) {
+            out.incremental_enabled = false;
+        }
+        if out.enabled && !out.incremental_enabled && !out.full_enabled {
+            return Err("history_mode_required".into());
+        }
+        Ok(out)
+    }
+}
+
+pub fn history_policy(conn: &Connection, emu: &str) -> Result<HistoryPolicy, String> {
+    let found = conn
+        .query_row(
+            "SELECT enabled, incremental_enabled, full_enabled, retention_days, retention_max_mb
+             FROM history_settings WHERE emulator_id = ?1",
+            params![emu],
+            |r| {
+                Ok(HistoryPolicy {
+                    enabled: r.get::<_, i64>(0)? != 0,
+                    incremental_enabled: r.get::<_, i64>(1)? != 0,
+                    full_enabled: r.get::<_, i64>(2)? != 0,
+                    retention_days: r.get(3)?,
+                    retention_max_mb: r.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(found.unwrap_or_else(|| HistoryPolicy::defaults_for(emu)))
+}
+
+pub fn set_history_policy(
+    conn: &Connection,
+    emu: &str,
+    policy: &HistoryPolicy,
+) -> Result<HistoryPolicy, String> {
+    let policy = policy.validate(emu)?;
+    conn.execute(
+        "INSERT INTO history_settings
+           (emulator_id, enabled, incremental_enabled, full_enabled, retention_days, retention_max_mb)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(emulator_id) DO UPDATE SET
+           enabled = ?2, incremental_enabled = ?3, full_enabled = ?4,
+           retention_days = ?5, retention_max_mb = ?6",
+        params![
+            emu,
+            policy.enabled as i64,
+            policy.incremental_enabled as i64,
+            policy.full_enabled as i64,
+            policy.retention_days,
+            policy.retention_max_mb
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(policy)
 }
 
 // ─── estado do emulador ─────────────────────────────────────────────────
@@ -158,13 +276,25 @@ pub fn head_rev(conn: &Connection, emu: &str) -> Result<Rev, String> {
 
 pub fn bump_head_rev(conn: &Connection, emu: &str) -> Result<Rev, String> {
     let next = head_rev(conn, emu)? + 1;
+    let now = chrono::Utc::now().timestamp_millis();
     conn.execute(
-        "INSERT INTO emulator_state (emulator_id, head_rev) VALUES (?1, ?2)
-         ON CONFLICT(emulator_id) DO UPDATE SET head_rev = ?2",
-        params![emu, next as i64],
+        "INSERT INTO emulator_state (emulator_id, head_rev, last_commit_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(emulator_id) DO UPDATE SET head_rev = ?2, last_commit_at = ?3",
+        params![emu, next as i64, now],
     )
     .map_err(|e| e.to_string())?;
     Ok(next)
+}
+
+pub fn last_commit_at(conn: &Connection, emu: &str) -> Result<Option<i64>, String> {
+    conn.query_row(
+        "SELECT last_commit_at FROM emulator_state WHERE emulator_id = ?1",
+        params![emu],
+        |r| r.get::<_, Option<i64>>(0),
+    )
+    .optional()
+    .map(|v| v.flatten())
+    .map_err(|e| e.to_string())
 }
 
 // ─── índice ─────────────────────────────────────────────────────────────
@@ -331,6 +461,91 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         conn
+    }
+
+    // ─── política de histórico ──────────────────────────────────────────
+
+    #[test]
+    fn history_policy_defaults_are_per_emulator_kind() {
+        let conn = mem();
+        // eden é dir-based: incremental faz sentido.
+        let eden = history_policy(&conn, "eden").unwrap();
+        assert!(eden.incremental_enabled);
+        assert!(!eden.full_enabled);
+
+        // pcsx2 é um memcard binário: só full.
+        let pcsx2 = history_policy(&conn, "pcsx2").unwrap();
+        assert!(!pcsx2.incremental_enabled);
+        assert!(pcsx2.full_enabled);
+    }
+
+    #[test]
+    fn history_policy_roundtrips() {
+        let conn = mem();
+        let wanted = HistoryPolicy {
+            enabled: true,
+            incremental_enabled: true,
+            full_enabled: true,
+            retention_days: 7,
+            retention_max_mb: 100,
+        };
+        set_history_policy(&conn, "eden", &wanted).unwrap();
+        assert_eq!(history_policy(&conn, "eden").unwrap(), wanted);
+    }
+
+    #[test]
+    fn file_based_emulator_has_incremental_forced_off() {
+        // O client pode mandar o que quiser; a classificação é do server.
+        let conn = mem();
+        let saved = set_history_policy(
+            &conn,
+            "pcsx2",
+            &HistoryPolicy {
+                enabled: true,
+                incremental_enabled: true,
+                full_enabled: true,
+                retention_days: 30,
+                retention_max_mb: 500,
+            },
+        )
+        .unwrap();
+        assert!(!saved.incremental_enabled);
+        assert!(!history_policy(&conn, "pcsx2").unwrap().incremental_enabled);
+    }
+
+    #[test]
+    fn enabled_history_with_no_mode_is_rejected() {
+        let conn = mem();
+        let err = set_history_policy(
+            &conn,
+            "eden",
+            &HistoryPolicy {
+                enabled: true,
+                incremental_enabled: false,
+                full_enabled: false,
+                retention_days: 30,
+                retention_max_mb: 500,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, "history_mode_required");
+    }
+
+    #[test]
+    fn disabled_history_may_have_both_modes_off() {
+        let conn = mem();
+        assert!(set_history_policy(
+            &conn,
+            "eden",
+            &HistoryPolicy {
+                enabled: false,
+                incremental_enabled: false,
+                full_enabled: false,
+                retention_days: 30,
+                retention_max_mb: 500,
+            },
+        )
+        .is_ok());
     }
 
     #[test]

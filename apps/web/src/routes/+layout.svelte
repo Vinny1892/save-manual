@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { listen } from "@tauri-apps/api/event";
-  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { goto } from "$app/navigation";
+  import { page } from "$app/stores";
   import "../app.css";
   import { theme, applyStoredTheme, toggleTheme } from "$lib/theme";
   import { hydrateFromList, applyChanged, emulators } from "$lib/store";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke, isTauri, api, ApiError } from "$lib/rpc";
   import { _, isLoading } from "svelte-i18n";
   import {
     locale,
@@ -20,7 +20,17 @@
   } from "$lib/gamepad";
   import { handleGamepadEvent } from "$lib/gamepadNav";
 
-  const win = getCurrentWindow();
+  /**
+   * A barra de janela só existe no Tauri, que roda com `decorations: false`.
+   * No browser a janela é do browser — os botões somem e os imports do
+   * Tauri nem são carregados, senão quebrariam na importação.
+   */
+  const nativeWindow = isTauri();
+
+  async function windowAction(action: "minimize" | "toggleMaximize" | "close") {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    await getCurrentWindow()[action]();
+  }
 
   let { children } = $props();
   let now = $state(new Date());
@@ -39,17 +49,60 @@
   }
   let activeSync = $state<SyncProgress | null>(null);
 
+  let authChecked = $state(false);
+
+  /**
+   * No browser, tudo exige sessão. A checagem roda uma vez no mount e manda
+   * pro login quando falta — sem isso cada página mostraria a própria lista
+   * de erros 401 em vez de uma tela de login.
+   *
+   * No Tauri não há o que checar: quem prova é o token do device.
+   */
+  async function ensureAuth(): Promise<boolean> {
+    if (isTauri()) return true;
+    if ($page.url.pathname === "/login") return true;
+    try {
+      await api.get("/me");
+      return true;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        await goto(`/login?next=${encodeURIComponent($page.url.pathname)}`);
+        return false;
+      }
+      return true; // server fora do ar: deixa a página mostrar o próprio erro
+    }
+  }
+
   onMount(() => {
     applyStoredTheme();
     const clockInterval = setInterval(() => (now = new Date()), 1000);
 
-    invoke<any[]>("list_emulators")
-      .then((list) => hydrateFromList(list))
-      .catch(() => {});
+    let cleanupEvents: (() => void) | undefined;
 
-    const unEmulator = listen<any>("emulator-changed", (e) => applyChanged(e.payload));
-    const unProgress = listen<SyncProgress>("sync-progress", (e) => {
-      activeSync = e.payload.active ? e.payload : null;
+    ensureAuth().then((ok) => {
+      authChecked = true;
+      if (!ok) return;
+
+      invoke<any[]>("list_emulators")
+        .then((list) => hydrateFromList(list))
+        .catch(() => {});
+
+      // Eventos são IPC do Tauri. O equivalente no browser é SSE, que entra
+      // junto com o progresso server-side (#5).
+      if (isTauri()) {
+        import("@tauri-apps/api/event").then(({ listen }) => {
+          const unEmulator = listen<any>("emulator-changed", (e) =>
+            applyChanged(e.payload),
+          );
+          const unProgress = listen<SyncProgress>("sync-progress", (e) => {
+            activeSync = e.payload.active ? e.payload : null;
+          });
+          cleanupEvents = () => {
+            unEmulator.then((fn) => fn());
+            unProgress.then((fn) => fn());
+          };
+        });
+      }
     });
 
     setGamepadHandler(handleGamepadEvent);
@@ -57,8 +110,7 @@
 
     return () => {
       clearInterval(clockInterval);
-      unEmulator.then((fn) => fn());
-      unProgress.then((fn) => fn());
+      cleanupEvents?.();
       stopGamepad();
       setGamepadHandler(null);
     };
@@ -119,9 +171,11 @@
         {$theme === "dark" ? "[ ☼ ]" : $theme === "light" ? "[ ❄ ]" : "[ ☾ ]"}
       </button>
       <div class="wm-btns">
-        <button class="wm-btn" onclick={() => win.minimize()} aria-label={$_("header.minimize")}>─</button>
-        <button class="wm-btn" onclick={() => win.toggleMaximize()} aria-label={$_("header.maximize")}>□</button>
-        <button class="wm-btn wm-close" onclick={() => win.close()} aria-label={$_("header.close")}>×</button>
+        {#if nativeWindow}
+          <button class="wm-btn" onclick={() => windowAction("minimize")} aria-label={$_("header.minimize")}>─</button>
+          <button class="wm-btn" onclick={() => windowAction("toggleMaximize")} aria-label={$_("header.maximize")}>□</button>
+          <button class="wm-btn wm-close" onclick={() => windowAction("close")} aria-label={$_("header.close")}>×</button>
+        {/if}
       </div>
     </div>
   </header>

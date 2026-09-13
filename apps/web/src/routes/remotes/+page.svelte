@@ -1,6 +1,6 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "$lib/rpc";
   import { onMount } from "svelte";
   import { _ } from "svelte-i18n";
   import { tErr } from "$lib/i18n";

@@ -289,5 +289,15 @@
     "memcard_unconfigured": "Incomplete config",
     "db_already_refreshing": "already in progress",
     "unknown": "Error: {message}"
+  },
+  "login": {
+    "username": "username",
+    "password": "password",
+    "submit": "sign in",
+    "submitting": "signing in...",
+    "invalid": "invalid username or password",
+    "locked": "account locked after too many attempts",
+    "unreachable": "could not reach the server",
+    "bootstrap_hint": "First time? Create the user on the NAS with: save-sync-server --create-user <name>"
   }
 }

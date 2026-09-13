@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "$lib/rpc";
   import { emulators } from "$lib/store";
   import { derived } from "svelte/store";
   import { _ } from "svelte-i18n";

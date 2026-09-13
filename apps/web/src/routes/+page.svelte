@@ -1,6 +1,6 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke, isTauri } from "$lib/rpc";
   import { emulators, type EmulatorView } from "$lib/store";
   import { _ } from "svelte-i18n";
   import { tErr } from "$lib/i18n";
@@ -50,6 +50,11 @@
       debugMsg = `set_enabled ${emu.id}: ` + tErr(err);
     }
   }
+
+  // Ligar/desligar um emulador e decisao do device que sincroniza, nao do
+  // server — no browser o botao nao aparece.
+  const native = isTauri();
+
 </script>
 
 <section class="banner">
@@ -114,6 +119,7 @@
           {emu.last_sync ?? $_("common.never")}
         </span>
       </a>
+      {#if native}
       <button
         class="power-btn"
         class:on={emu.enabled}
@@ -122,6 +128,7 @@
       >
         {emu.enabled ? $_("home.btn_on") : $_("home.btn_off")}
       </button>
+      {/if}
     </li>
   {/each}
 </ul>
