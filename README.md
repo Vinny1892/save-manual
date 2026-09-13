@@ -27,7 +27,8 @@ histórico com retenção, a resolução de título (as title DBs somam 93 MB e
 antes eram baixadas por cada instalação) e a UI, acessível de qualquer browser
 — inclusive do celular, pra administrar sem precisar do PC ligado.
 
-Os clients falam **um protocolo HTTP só**. Nem SMB nem rclone entram nesse
+Os clients falam **um protocolo HTTP só** — especificado em
+[`docs/protocol.md`](docs/protocol.md). Nem SMB nem rclone entram nesse
 caminho: nenhum dos dois é viável de dentro de um app Android. O rclone
 continua no server, pro backup off-site opcional em S3/R2.
 
@@ -603,7 +604,7 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 ### Próximas fases — server + clients
 
 - [x] **Extrair o miolo do `lib.rs` pro core** ([#1](https://github.com/Vinny1892/save-manual/issues/1)): `do_sync`, history, prune e conflitos viraram `core::engine` e `core::history`; o progresso sai por `ProgressSink` em vez de `AppHandle`. O `lib.rs` do client caiu de 2246 pra 1184 linhas e os 81 testes passaram todos pro core
-- [ ] **Protocolo HTTP**: manifesto (`path`, `size`, `mtime`, hash) → diff → upload/download → commit. Conflito mantém a semântica atual (mtime mais novo ganha, perdedor preservado)
+- [x] **Protocolo HTTP** ([#2](https://github.com/Vinny1892/save-manual/issues/2)): especificado em [`docs/protocol.md`](docs/protocol.md) — estado por `rev` monotônico + baseline no client (o que os listing files do bisync faziam), ciclo plan → transfer → commit, tombstones pra deleção, SHA-256, transfer por arquivo
 - [ ] **Server**: API do protocolo, login com usuário e senha, histórico/retenção server-side, title DBs centralizadas, SSE de progresso
 - [ ] **Web UI**: transporte HTTP (`invoke` → `fetch`, `listen` → `EventSource`), tela de login, navegador de diretórios server-side no lugar do picker nativo
 - [ ] **Client de PC**: vira agente + UI — watcher e proc-watch locais alimentando o protocolo
