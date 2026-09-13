@@ -4,7 +4,7 @@ Especificação do que o client de PC e o client Android falam com o server.
 Um protocolo só: nem SMB nem rclone entram aqui, porque nenhum dos dois é
 viável de dentro de um app Android.
 
-Status: **especificação**. Implementação em [#3](https://github.com/Vinny1892/save-manual/issues/3).
+Status: **implementado** no server (`apps/server`). O client ainda fala o protocolo antigo — a troca é a [#8](https://github.com/Vinny1892/save-manual/issues/8).
 
 O rclone não morre — continua no server, usando o `Backend::Rclone` que já
 existe, pro backup off-site opcional do NAS pra S3/R2. Ele só sai do caminho
@@ -132,8 +132,8 @@ lê conteúdo nenhum.
 
 ## 5. Endpoints
 
-Prefixo `/api/v1`. Todos exigem `Authorization: Bearer <device_token>`,
-exceto os de pareamento. `{emu}` é `eden` | `rpcs3` | `pcsx2`.
+Prefixo `/api/v1`. Os de sync exigem `Authorization: Bearer <device_token>`;
+os de `/admin` exigem o cookie de sessão (§10). `{emu}` é `eden`, `rpcs3` ou `pcsx2`.
 
 ### `POST /sync/{emu}/plan`
 
@@ -343,17 +343,66 @@ Download retoma por `Range`. Não há resume no meio de um upload de arquivo
 
 ## 10. Autenticação e pareamento
 
-O usuário loga na web UI (sessão por cookie). Pra parear um device:
+São dois mundos com regras diferentes:
 
-1. na web UI, gera um **código de pareamento** — 8 caracteres, validade de 10
-   minutos, uso único
+| | Usuário | Device |
+|---|---|---|
+| prova quem é | senha (argon2id) | `device_token` |
+| onde viaja | cookie de sessão | `Authorization: Bearer` |
+| validade | 30 dias | não expira |
+| pra quê | administrar pela web UI | sincronizar |
+
+### Bootstrap
+
+O primeiro usuário não pode nascer pela web UI, porque a web UI exige estar
+logado. Ele nasce pela CLI:
+
+```bash
+echo 'minha-senha' | save-sync-server --create-user vinicius
+# ou, sem stdin, o server gera e imprime uma vez só:
+save-sync-server --create-user vinicius
+```
+
+Exigir `docker exec` no NAS pra isso é a garantia de que ninguém na rede cria
+a primeira conta antes do dono. Enquanto não existir usuário, o server sobe
+e avisa no log.
+
+### Sessão
+
+`POST /api/v1/login` com `{username, password}` devolve um cookie
+`save_sync_session` — `HttpOnly`, `SameSite=Lax`, 30 dias. `Secure` só entra
+com `SAVE_SYNC_SECURE_COOKIE=1`: ligar por padrão quebraria o acesso por HTTP
+na LAN, que é o caso comum num NAS.
+
+`POST /api/v1/logout` mata só aquela sessão — sair no celular não derruba o
+PC. `GET /api/v1/me` diz quem está logado.
+
+**Força bruta**: 5 senhas erradas travam a conta por 5 minutos. A trava é por
+usuário e não por IP, porque atrás de um reverse proxy todo mundo tem o mesmo
+IP e o header que diria o real é fácil demais de forjar. Enquanto travado,
+nem a senha certa entra — é o ponto: o atacante não distingue o acerto.
+Usuário inexistente e senha errada devolvem o mesmo `401 invalid_credentials`,
+e o inexistente ainda paga o custo de um hash pra que o tempo de resposta não
+entregue quais contas existem.
+
+### Pareamento
+
+1. na web UI logada, `POST /api/v1/admin/pairing-code` gera um código — 8
+   caracteres, 10 minutos, uso único. Pela CLI, `--pair` faz o mesmo
 2. o client manda `POST /api/v1/pair` com `{code, device_name, platform}`
 3. o server responde `{device_id, device_token}`
 
-O `device_token` é o `Bearer` de todas as chamadas de sync, não expira e é
-revogável na web UI. Fica guardado no SQLite local do client — que existe
-também pra que o client não perca configuração quando o NAS estiver fora do
-ar.
+O `device_token` é o `Bearer` de todas as chamadas de sync. Fica guardado no
+SQLite local do client — que existe também pra que o client não perca
+configuração quando o NAS estiver fora do ar.
+
+`GET /api/v1/admin/devices` lista os devices pareados;
+`DELETE /api/v1/admin/devices/{id}` revoga. A revogação apaga a linha, então
+o token deixa de resolver na chamada seguinte — sem lista de bloqueio e sem
+espera.
+
+**Os dois tokens vão hasheados pro banco.** O `save-sync-server.db` fica num
+NAS, junto dos saves; se ele vazar, nem sessão nem device saem junto.
 
 ---
 
@@ -374,6 +423,8 @@ do frontend.
 | 410 | `resync_required` | `last_rev` velho demais (tombstone já expirou) |
 | 413 | `too_large` | arquivo acima do limite configurado |
 | 422 | `hash_mismatch` | o conteúdo recebido não bate com o hash declarado |
+| 401 | `invalid_credentials` | login com usuário ou senha errados |
+| 429 | `account_locked` | 5 senhas erradas seguidas; trava por 5 minutos |
 | 429 | `busy` | já existe sync em andamento pra esse emulador |
 | 500 | `internal` | o resto |
 

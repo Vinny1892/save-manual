@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use rusqlite::{params, Connection, OptionalExtension};
 use save_sync_core::protocol::{IndexEntry, Rev};
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 pub fn open(path: &std::path::Path) -> Result<Connection, String> {
     let conn = Connection::open(path).map_err(|e| e.to_string())?;
@@ -98,6 +98,39 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
                 mtime      INTEGER NOT NULL,
                 PRIMARY KEY (session_id, path),
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            ",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    if version < 2 {
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS users (
+                id            TEXT PRIMARY KEY,
+                username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                password_hash TEXT NOT NULL,
+                created_at    INTEGER NOT NULL
+            );
+
+            -- Sessão do browser. O token vai hasheado pelo mesmo motivo que
+            -- o de device: quem ler o banco não ganha sessão de ninguém.
+            CREATE TABLE IF NOT EXISTS web_sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id    TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            -- Trava de força bruta. O argon2 já limita a ~10 tentativas por
+            -- segundo por si só, mas isso é pouco pra uma senha fraca se o
+            -- server estiver exposto.
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                username     TEXT PRIMARY KEY COLLATE NOCASE,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                locked_until INTEGER NOT NULL DEFAULT 0
             );
             ",
         )

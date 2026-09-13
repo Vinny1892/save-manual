@@ -14,6 +14,7 @@ mod api;
 mod auth;
 mod db;
 mod storage;
+mod users;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -24,6 +25,26 @@ use tower_http::services::{ServeDir, ServeFile};
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// Valor que segue uma flag: `--create-user vinicius` devolve `vinicius`.
+fn flag_value(flag: &str) -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    let pos = args.iter().position(|a| a == flag)?;
+    args.get(pos + 1).filter(|v| !v.starts_with("--")).cloned()
+}
+
+/// Lê a senha da stdin quando ela foi redirecionada. Com terminal
+/// interativo não bloqueia esperando digitação — nesse caso o chamador
+/// gera uma senha.
+fn read_stdin_password() -> Option<String> {
+    use std::io::{IsTerminal, Read};
+    if std::io::stdin().is_terminal() {
+        return None;
+    }
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf).ok()?;
+    Some(buf.trim().to_string())
 }
 
 /// `--health-check` é o que o HEALTHCHECK do Dockerfile roda. Um TCP connect
@@ -69,15 +90,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let conn = db::open(&data_dir.join("save-sync-server.db"))?;
 
-    // `--pair` emite um código e sai. Enquanto o login da web UI não existe
-    // (#4), esta é a única via de pareamento — e é a via segura: emitir
-    // código por endpoint aberto deixaria qualquer um na rede parear um
-    // device. Aqui é preciso `docker exec` no NAS.
+    // `--create-user <nome>` cria uma conta e sai. É o bootstrap: o primeiro
+    // usuário não tem como ser criado pela web UI, porque a web UI exige
+    // estar logado. Exigir `docker exec` no NAS pra isso é a garantia de
+    // que ninguém na rede cria a primeira conta antes do dono.
+    //
+    // A senha vem da stdin quando há algo lá (`echo senha | ... --create-user
+    // vini`); sem stdin, o server gera uma e imprime uma vez só.
+    if let Some(username) = flag_value("--create-user") {
+        let piped = read_stdin_password();
+        let (password, generated) = match piped {
+            Some(p) if !p.is_empty() => (p, false),
+            _ => (users::generate_password(), true),
+        };
+        users::create_user(&conn, &username, &password)?;
+        println!("usuário '{username}' criado");
+        if generated {
+            println!("senha: {password}");
+            println!("guarde agora — ela não é exibida de novo");
+        }
+        return Ok(());
+    }
+
+    // `--pair` emite um código de pareamento pela CLI. A web UI logada tem
+    // o mesmo em `POST /api/v1/admin/pairing-code`; a via de CLI continua
+    // existindo pra quando não há browser à mão.
     if std::env::args().any(|a| a == "--pair") {
         let code = auth::create_pairing_code(&conn)?;
         println!("código de pareamento: {code}");
         println!("válido por 10 minutos, uso único");
         return Ok(());
+    }
+
+    if users::user_count(&conn)? == 0 {
+        tracing::warn!(
+            "nenhum usuário cadastrado — a web UI não tem como ser acessada. \
+             Crie o primeiro com: save-sync-server --create-user <nome>"
+        );
     }
 
     let state = Arc::new(api::AppState {

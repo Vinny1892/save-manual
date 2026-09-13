@@ -25,14 +25,46 @@ check() { # check <descricao> <esperado> <obtido>
 }
 
 rm -rf "$DATA"; mkdir -p "$DATA"
+JAR="$DATA/cookies.txt"
 
 CODE2=$(SAVE_SYNC_DATA=$DATA $BIN --pair 2>/dev/null | head -1 | sed 's/.*: //')
 CODE1=$(SAVE_SYNC_DATA=$DATA $BIN --pair 2>/dev/null | head -1 | sed 's/.*: //')
+echo 'senhaforte123' | SAVE_SYNC_DATA=$DATA $BIN --create-user vinicius >/dev/null 2>&1
 
 SAVE_SYNC_ADDR=127.0.0.1:$PORT SAVE_SYNC_WEB=apps/web/build SAVE_SYNC_DATA=$DATA $BIN >/dev/null 2>&1 &
 SRV=$!
 trap 'kill $SRV 2>/dev/null' EXIT
 for _ in $(seq 1 40); do curl -sf $URL/health >/dev/null 2>&1 && break; done
+
+echo "== login =="
+BADLOGIN=$(curl -s -o /dev/null -w "%{http_code}" -X POST $URL/api/v1/login \
+           -H 'content-type: application/json' \
+           -d '{"username":"vinicius","password":"errada"}')
+check "senha errada é 401" 401 "$BADLOGIN"
+
+NOUSER=$(curl -s -o /dev/null -w "%{http_code}" -X POST $URL/api/v1/login \
+         -H 'content-type: application/json' \
+         -d '{"username":"ninguem","password":"qualquer"}')
+check "usuário inexistente responde igual" 401 "$NOUSER"
+
+GOODLOGIN=$(curl -s -o /dev/null -w "%{http_code}" -c "$JAR" -X POST $URL/api/v1/login \
+            -H 'content-type: application/json' \
+            -d '{"username":"vinicius","password":"senhaforte123"}')
+check "login correto é 200" 200 "$GOODLOGIN"
+check "cookie é HttpOnly" 1 "$(grep -c '#HttpOnly_' "$JAR")"
+
+ME=$(curl -s -b "$JAR" $URL/api/v1/me)
+check "me devolve o usuário" 1 "$(echo "$ME" | grep -c '"username":"vinicius"')"
+
+NOME=$(curl -s -o /dev/null -w "%{http_code}" $URL/api/v1/me)
+check "me sem cookie é 401" 401 "$NOME"
+
+echo "== administração exige login =="
+ADMNOAUTH=$(curl -s -o /dev/null -w "%{http_code}" -X POST $URL/api/v1/admin/pairing-code)
+check "gerar código sem login é 401" 401 "$ADMNOAUTH"
+
+ADMCODE=$(curl -s -b "$JAR" -X POST $URL/api/v1/admin/pairing-code | sed -n 's/.*"code":"\([^"]*\)".*/\1/p')
+check "logado gera código de 8 chars" 8 "${#ADMCODE}"
 
 echo "== pareamento =="
 T1=$(curl -s -X POST $URL/api/v1/pair -H 'content-type: application/json' \
@@ -131,6 +163,24 @@ STEAL=$(printf 'x' | curl -s -o /dev/null -w "%{http_code}" -X PUT \
         "$URL/api/v1/sync/eden/blob?session=$S2&path=$P" -H "authorization: Bearer $T1" \
         -H "x-save-sync-hash: $(printf 'x' | sha256sum | cut -d' ' -f1)" --data-binary @-)
 check "escrever na sessão alheia é 403" 403 "$STEAL"
+
+echo "== revogação de device =="
+DEVS=$(curl -s -b "$JAR" $URL/api/v1/admin/devices)
+check "admin lista os 2 devices" 2 "$(echo "$DEVS" | grep -o '"platform"' | wc -l)"
+
+# Quebra um objeto por linha antes de casar: o serde_json emite as chaves
+# em ordem alfabética, então não dá pra assumir "id" ao lado de "name".
+DEV2=$(echo "$DEVS" | tr '{' '\n' | grep celular | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+curl -s -b "$JAR" -X DELETE "$URL/api/v1/admin/devices/$DEV2" >/dev/null
+REVOKED=$(curl -s -o /dev/null -w "%{http_code}" -X POST $URL/api/v1/sync/eden/plan \
+          -H "authorization: Bearer $T2" -H 'content-type: application/json' \
+          -d '{"last_rev":0,"changes":[]}')
+check "device revogado perde acesso na hora" 401 "$REVOKED"
+
+echo "== logout =="
+curl -s -b "$JAR" -c "$JAR" -X POST $URL/api/v1/logout >/dev/null
+AFTER=$(curl -s -o /dev/null -w "%{http_code}" -b "$JAR" $URL/api/v1/me)
+check "sessão morre no logout" 401 "$AFTER"
 
 echo
 echo "== $ok passaram, $fail falharam =="

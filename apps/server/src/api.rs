@@ -6,7 +6,7 @@ use axum::body::Bytes;
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::{header, request::Parts, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use rusqlite::{params, Connection, OptionalExtension};
 use save_sync_core::db::HistorySettings;
@@ -19,6 +19,7 @@ use serde_json::json;
 use crate::auth;
 use crate::db;
 use crate::storage::{self, Store};
+use crate::users;
 
 /// Sessão sem atividade por mais que isso é considerada abandonada, e o
 /// emulador volta a aceitar `plan` de outro device.
@@ -101,12 +102,170 @@ impl FromRequestParts<Arc<AppState>> for Device {
     }
 }
 
+/// Usuário logado, resolvido pelo cookie de sessão. Um handler que pede
+/// `User` não tem como esquecer de checar o login.
+pub struct User(pub String);
+
+pub const SESSION_COOKIE: &str = "save_sync_session";
+
+/// Lê um cookie do header `Cookie`. Não vale trazer uma dependência de
+/// cookie jar pra isso: o header é uma lista `nome=valor` separada por
+/// `; `, e só precisamos ler um nome.
+fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get(header::COOKIE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .filter_map(|pair| pair.trim().split_once('='))
+        .find(|(k, _)| *k == name)
+        .map(|(_, v)| v)
+}
+
+impl FromRequestParts<Arc<AppState>> for User {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        let token = cookie_value(&parts.headers, SESSION_COOKIE)
+            .ok_or(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized"))?
+            .to_string();
+        let conn = state.conn.lock().map_err(|_| ApiError::internal("lock"))?;
+        let user = users::user_for_session(&conn, &token)
+            .map_err(ApiError::internal)?
+            .ok_or(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized"))?;
+        Ok(User(user))
+    }
+}
+
+/// `Secure` só entra quando o server está atrás de TLS. Ligar por padrão
+/// quebraria o acesso por HTTP na LAN, que é o caso comum num NAS; deixar
+/// desligado atrás de HTTPS deixaria o cookie viajar em claro. Por isso é
+/// escolha explícita, via `SAVE_SYNC_SECURE_COOKIE=1`.
+fn session_cookie(token: &str, max_age_secs: i64) -> String {
+    let secure = std::env::var("SAVE_SYNC_SECURE_COOKIE").is_ok_and(|v| v == "1");
+    format!(
+        "{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age_secs}{}",
+        if secure { "; Secure" } else { "" }
+    )
+}
+
 fn check_emulator(emu: &str) -> Result<(), ApiError> {
     if storage::is_known_emulator(emu) {
         Ok(())
     } else {
         Err(ApiError::new(StatusCode::NOT_FOUND, "unknown_emulator"))
     }
+}
+
+// ─── login ──────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+async fn login(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<LoginRequest>,
+) -> Result<Response, ApiError> {
+    let token = {
+        let conn = state.conn.lock().map_err(|_| ApiError::internal("lock"))?;
+        users::login(&conn, &req.username, &req.password).map_err(|e| match e {
+            users::LoginError::Invalid => {
+                ApiError::new(StatusCode::UNAUTHORIZED, "invalid_credentials")
+            }
+            users::LoginError::Locked { until_ms } => ApiError::with_detail(
+                StatusCode::TOO_MANY_REQUESTS,
+                "account_locked",
+                format!("destrava em {} segundos", (until_ms - auth::now_ms()) / 1000),
+            ),
+            users::LoginError::Internal(detail) => ApiError::internal(detail),
+        })?
+    };
+
+    Ok((
+        StatusCode::OK,
+        [(header::SET_COOKIE, session_cookie(&token, 30 * 24 * 3600))],
+        Json(json!({"status": "ok"})),
+    )
+        .into_response())
+}
+
+async fn logout(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    if let Some(token) = cookie_value(&headers, SESSION_COOKIE) {
+        let conn = state.conn.lock().map_err(|_| ApiError::internal("lock"))?;
+        users::logout(&conn, token).map_err(ApiError::internal)?;
+    }
+    // Max-Age=0 apaga o cookie no browser mesmo se a sessão já não existia.
+    Ok((
+        StatusCode::OK,
+        [(header::SET_COOKIE, session_cookie("", 0))],
+        Json(json!({"status": "ok"})),
+    )
+        .into_response())
+}
+
+async fn me(
+    State(state): State<Arc<AppState>>,
+    User(user_id): User,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let conn = state.conn.lock().map_err(|_| ApiError::internal("lock"))?;
+    let username = users::username_of(&conn, &user_id)
+        .map_err(ApiError::internal)?
+        .unwrap_or_default();
+    Ok(Json(json!({"user_id": user_id, "username": username})))
+}
+
+// ─── administração (exige login) ────────────────────────────────────────
+
+async fn create_pairing_code(
+    State(state): State<Arc<AppState>>,
+    User(_): User,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let conn = state.conn.lock().map_err(|_| ApiError::internal("lock"))?;
+    let code = auth::create_pairing_code(&conn).map_err(ApiError::internal)?;
+    Ok(Json(json!({"code": code, "expires_in_seconds": 600})))
+}
+
+async fn list_devices(
+    State(state): State<Arc<AppState>>,
+    User(_): User,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let conn = state.conn.lock().map_err(|_| ApiError::internal("lock"))?;
+    let mut stmt = conn
+        .prepare("SELECT id, name, platform, created_at, last_seen FROM devices ORDER BY created_at")
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(json!({
+                "id": r.get::<_, String>(0)?,
+                "name": r.get::<_, String>(1)?,
+                "platform": r.get::<_, String>(2)?,
+                "created_at": r.get::<_, i64>(3)?,
+                "last_seen": r.get::<_, Option<i64>>(4)?,
+            }))
+        })
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(Json(json!({"devices": rows})))
+}
+
+async fn revoke_device(
+    State(state): State<Arc<AppState>>,
+    User(_): User,
+    Path(device_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let conn = state.conn.lock().map_err(|_| ApiError::internal("lock"))?;
+    auth::revoke_device(&conn, &device_id).map_err(ApiError::internal)?;
+    Ok(Json(json!({"status": "revogado"})))
 }
 
 // ─── pareamento ─────────────────────────────────────────────────────────
@@ -548,6 +707,12 @@ fn missing_uploads(
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/api/v1/login", post(login))
+        .route("/api/v1/logout", post(logout))
+        .route("/api/v1/me", get(me))
+        .route("/api/v1/admin/pairing-code", post(create_pairing_code))
+        .route("/api/v1/admin/devices", get(list_devices))
+        .route("/api/v1/admin/devices/{id}", delete(revoke_device))
         .route("/api/v1/pair", post(pair))
         .route("/api/v1/sync/{emu}/plan", post(plan))
         .route("/api/v1/sync/{emu}/blob", put(put_blob).get(get_blob))

@@ -8,7 +8,7 @@ Monorepo com três entregáveis em volta de um núcleo compartilhado:
 
 | Componente | O que é | Estado |
 |---|---|---|
-| `apps/server` | Server que roda em Docker no NAS. Dono do storage, do índice e do histórico. API de sync funcional; login e UI de admin pendentes. | parcial |
+| `apps/server` | Server que roda em Docker no NAS. Dono do storage, do índice e do histórico, com login. Retenção automática e SSE pendentes. | parcial |
 | `apps/client-pc` | Client de PC: UI Tauri 2 + agente local (watcher de filesystem e de processo). | funcional |
 | `apps/android` | Client Android nativo (Kotlin). | não iniciado |
 | `apps/web` | UI SvelteKit — servida pelo server e embutida no client de PC. | funcional |
@@ -72,6 +72,18 @@ O server lê três variáveis, com defaults pensados pro container:
 | `SAVE_SYNC_ADDR` | `0.0.0.0:8787` | endereço de escuta |
 | `SAVE_SYNC_WEB` | `/srv/web` | diretório da SPA buildada |
 | `SAVE_SYNC_DATA` | `/data` | raiz dos dados persistentes |
+| `SAVE_SYNC_SECURE_COOKIE` | desligado | `1` marca o cookie de sessão como `Secure`. Só ligue atrás de TLS — na LAN em HTTP isso quebra o login |
+
+Duas subcomandos de CLI, pensados pra `docker exec`:
+
+```bash
+# primeiro usuário — não dá pra criar pela web UI, que exige estar logado
+echo 'minha-senha' | save-sync-server --create-user vinicius
+save-sync-server --create-user vinicius   # sem stdin, gera e imprime a senha
+
+# código de pareamento de device (a web UI logada também tem)
+save-sync-server --pair
+```
 
 Rodando fora do Docker, aponta os dois caminhos pra árvore local:
 
@@ -612,7 +624,8 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 - [x] **Extrair o miolo do `lib.rs` pro core** ([#1](https://github.com/Vinny1892/save-manual/issues/1)): `do_sync`, history, prune e conflitos viraram `core::engine` e `core::history`; o progresso sai por `ProgressSink` em vez de `AppHandle`. O `lib.rs` do client caiu de 2246 pra 1184 linhas e os 81 testes passaram todos pro core
 - [x] **Protocolo HTTP** ([#2](https://github.com/Vinny1892/save-manual/issues/2)): especificado em [`docs/protocol.md`](docs/protocol.md) — estado por `rev` monotônico + baseline no client (o que os listing files do bisync faziam), ciclo plan → transfer → commit, tombstones pra deleção, SHA-256, transfer por arquivo
 - [x] **Server — API do protocolo** ([#3](https://github.com/Vinny1892/save-manual/issues/3)): pareamento, `plan`/`blob`/`commit`, índice em SQLite, staging com verificação de hash na ingestão, commit atômico com snapshot de history e delta. Pareamento por `--pair` até o login existir
-- [ ] **Server**: login com usuário e senha, histórico/retenção server-side, title DBs centralizadas, SSE de progresso
+- [x] **Server — login** ([#4](https://github.com/Vinny1892/save-manual/issues/4)): senha com argon2id, sessão por cookie `HttpOnly`, trava de força bruta, bootstrap por `--create-user`, e os endpoints de admin (gerar código de pareamento, listar e revogar devices)
+- [ ] **Server**: histórico/retenção server-side rodando sozinha, title DBs centralizadas, SSE de progresso
 - [ ] **Web UI**: transporte HTTP (`invoke` → `fetch`, `listen` → `EventSource`), tela de login, navegador de diretórios server-side no lugar do picker nativo
 - [ ] **Client de PC**: vira agente + UI — watcher e proc-watch locais alimentando o protocolo
 - [ ] **Client Android** (Kotlin): bloqueado pela restrição de `Android/data` — ver `apps/android/README.md`
