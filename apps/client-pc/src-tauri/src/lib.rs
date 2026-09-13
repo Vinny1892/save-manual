@@ -84,6 +84,94 @@ fn progress_sink(app: &AppHandle) -> Arc<dyn ProgressSink> {
     Arc::new(TauriProgress(app.clone()))
 }
 
+// ─── pareamento com o server ────────────────────────────────────────────
+
+const SETTING_SERVER_URL: &str = "server_url";
+const SETTING_DEVICE_TOKEN: &str = "device_token";
+
+/// Server configurado, se houver. Quando devolve `None`, o client ainda
+/// está no modo antigo (rclone direto pro destino).
+async fn server_client(state: &State<'_, AppState>) -> Option<save_sync_core::client::ServerClient> {
+    let s = state.lock().await;
+    let url = db::get_setting(&s.conn, SETTING_SERVER_URL).ok().flatten()?;
+    let token = db::get_setting(&s.conn, SETTING_DEVICE_TOKEN).ok().flatten()?;
+    if url.is_empty() || token.is_empty() {
+        return None;
+    }
+    Some(save_sync_core::client::ServerClient::new(&url, &token))
+}
+
+#[tauri::command]
+async fn pair_with_server(
+    url: String,
+    code: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let device_name = hostname();
+    let paired = save_sync_core::client::ServerClient::pair(
+        &url,
+        &code,
+        &device_name,
+        std::env::consts::OS,
+    )
+    .await?;
+
+    let s = state.lock().await;
+    db::set_setting(&s.conn, SETTING_SERVER_URL, url.trim_end_matches('/'))?;
+    db::set_setting(&s.conn, SETTING_DEVICE_TOKEN, &paired.device_token)?;
+    Ok(paired.device_id)
+}
+
+#[tauri::command]
+async fn server_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let s = state.lock().await;
+    let url = db::get_setting(&s.conn, SETTING_SERVER_URL)?.unwrap_or_default();
+    let paired = db::get_setting(&s.conn, SETTING_DEVICE_TOKEN)?
+        .is_some_and(|t| !t.is_empty());
+    Ok(serde_json::json!({ "url": url, "paired": paired }))
+}
+
+#[tauri::command]
+async fn unpair_server(state: State<'_, AppState>) -> Result<(), String> {
+    let s = state.lock().await;
+    db::set_setting(&s.conn, SETTING_SERVER_URL, "")?;
+    db::set_setting(&s.conn, SETTING_DEVICE_TOKEN, "")?;
+    Ok(())
+}
+
+fn hostname() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "pc".to_string())
+}
+
+/// Um ciclo de sync pelo protocolo HTTP. Substitui o `do_sync` baseado em
+/// rclone quando há server pareado — o destino deixa de ser um remote e
+/// passa a ser o NAS, que é quem resolve conflito e histórico.
+async fn sync_via_server(
+    server: &save_sync_core::client::ServerClient,
+    emu_id: &str,
+    source: &std::path::Path,
+    state: &State<'_, AppState>,
+) -> Result<save_sync_core::client::SyncReport, String> {
+    let baseline = {
+        let s = state.lock().await;
+        db::load_baseline(&s.conn, emu_id)?
+    };
+
+    let subtrees = engine::sync_subtrees(emu_id);
+    let report =
+        save_sync_core::client::sync_emulator(server, emu_id, source, subtrees, &baseline).await?;
+
+    // O baseline novo só é gravado depois que tudo foi aplicado em disco.
+    // Gravar antes deixaria o device achando que está em dia sem estar.
+    {
+        let mut s = state.lock().await;
+        db::save_baseline(&mut s.conn, emu_id, &report.baseline)?;
+    }
+    Ok(report)
+}
+
 
 #[tauri::command]
 async fn list_emulators(state: State<'_, AppState>) -> Result<Vec<EmulatorView>, String> {
@@ -162,6 +250,30 @@ async fn sync_now(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    // Com server pareado, o sync vai pelo protocolo HTTP e o destino local
+    // (rclone/pasta) sai de cena. Sem server, segue o caminho antigo — o
+    // client continua utilizável sozinho enquanto o NAS não existe.
+    if let Some(server) = server_client(&state).await {
+        let source = {
+            let s = state.lock().await;
+            let emu = db::get(&s.conn, &id)?;
+            if !emu.enabled {
+                return Err("emulator_disabled".into());
+            }
+            if emu.source_path.is_empty() {
+                return Err("config_incomplete_source".into());
+            }
+            std::path::PathBuf::from(&emu.source_path)
+        };
+
+        let result = sync_via_server(&server, &id, &source, &state)
+            .await
+            .map(|_| ());
+        record_result(&id, &result, &state).await;
+        emit_changed(&app, &state, &id).await;
+        return result;
+    }
+
     let (source, emu, history) = {
         let s = state.lock().await;
         let emu = db::get(&s.conn, &id)?;
@@ -1146,6 +1258,9 @@ pub fn run() {
             start_watch,
             stop_watch,
             start_proc_watch,
+            pair_with_server,
+            server_status,
+            unpair_server,
             stop_proc_watch,
             detect_save_paths,
             get_eden_uuid,

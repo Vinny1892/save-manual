@@ -638,6 +638,12 @@ async fn put_blob(
 pub struct BlobDownloadQuery {
     pub path: String,
     pub rev: Option<Rev>,
+    /// Hash esperado. É a validação preferida, e não o `rev`, porque o
+    /// `rev` de um arquivo muda por motivos que não alteram o conteúdo —
+    /// preservar um perdedor de conflito renomeia a entrada e carimba um
+    /// `rev` novo, e o client, que planejou antes do commit, ainda carrega
+    /// o antigo. Validar por conteúdo não tem esse falso negativo.
+    pub hash: Option<String>,
 }
 
 async fn get_blob(
@@ -657,11 +663,16 @@ async fn get_blob(
         return Err(ApiError::new(StatusCode::NOT_FOUND, "save_not_found"));
     };
     // O client pede uma versão específica: se ela já mudou, refazer o plano
-    // é mais barato do que entregar bytes que ele vai descartar.
-    if let Some(requested) = q.rev {
-        if requested != entry.rev {
+    // é mais barato do que entregar bytes que ele vai descartar. Hash tem
+    // precedência sobre rev quando os dois vêm.
+    match (&q.hash, q.rev) {
+        (Some(hash), _) if !hash.eq_ignore_ascii_case(&entry.hash) => {
             return Err(ApiError::new(StatusCode::CONFLICT, "stale_rev"));
         }
+        (None, Some(rev)) if rev != entry.rev => {
+            return Err(ApiError::new(StatusCode::CONFLICT, "stale_rev"));
+        }
+        _ => {}
     }
 
     let bytes = std::fs::read(state.store.live_path(&emu, &q.path))

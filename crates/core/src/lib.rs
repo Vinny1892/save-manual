@@ -8,6 +8,7 @@
 //! lugar errado — o acoplamento vai pra camada de cima (`apps/`).
 
 pub mod backend;
+pub mod client;
 pub mod db;
 pub mod detect;
 pub mod engine;

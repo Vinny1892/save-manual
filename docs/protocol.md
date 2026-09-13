@@ -4,7 +4,7 @@ Especificação do que o client de PC e o client Android falam com o server.
 Um protocolo só: nem SMB nem rclone entram aqui, porque nenhum dos dois é
 viável de dentro de um app Android.
 
-Status: **implementado** no server (`apps/server`). O client ainda fala o protocolo antigo — a troca é a [#8](https://github.com/Vinny1892/save-manual/issues/8).
+Status: **implementado** no server (`apps/server`) e no client de PC (`crates/core/src/client.rs`). O client Android ainda não existe ([#9](https://github.com/Vinny1892/save-manual/issues/9)).
 
 O rclone não morre — continua no server, usando o `Backend::Rclone` que já
 existe, pro backup off-site opcional do NAS pra S3/R2. Ele só sai do caminho
@@ -113,7 +113,7 @@ client                                            server
   │
   │ 2. transfere (até 4 em paralelo)
   ├─ PUT /sync/{emu}/blob?session=&path= ──────────▶  grava em staging
-  ├─ GET /sync/{emu}/blob?path=&rev= ──────────────▶  devolve conteúdo
+  ├─ GET /sync/{emu}/blob?path=&hash= ─────────────▶  devolve conteúdo
   │
   ├─ POST /sync/{emu}/commit ──────────────────────▶
   │    {session}                                 snapshot de history,
@@ -174,11 +174,22 @@ na ingestão, não no commit, pra falhar cedo.
 Idempotente: reenviar o mesmo `(session, path, hash)` responde `200` sem
 regravar.
 
-### `GET /sync/{emu}/blob?path={p}&rev={r}`
+### `GET /sync/{emu}/blob?path={p}&hash={h}`
 
-Conteúdo bruto, com os mesmos headers de hash e mtime na resposta. `rev` é o
-que veio no plano; se aquela versão já não for a corrente, o server responde
+Conteúdo bruto, com os mesmos headers de hash e mtime na resposta. Se o
+conteúdo corrente não bate com o `hash` pedido, o server responde
 `409 stale_rev` e o client refaz o plano.
+
+**A validação é por hash e não por `rev`** — e isso não é detalhe. O `rev`
+de um arquivo muda por motivos que não alteram o conteúdo: quando o client
+vence um conflito, o server preserva a versão dele renomeando pra
+`.conflictN`, e essa entrada ganha o `rev` do commit. O client planejou
+antes do commit e ainda carrega o `rev` antigo, então pedir por `rev` daria
+`409` num arquivo que está exatamente como ele espera. Pedir por conteúdo
+não tem esse falso negativo.
+
+`rev` ainda é aceito como alternativa, pra quem quiser amarrar numa versão
+específica. Quando os dois vêm, o hash tem precedência.
 
 Aceita `Range` — é daqui que sai o resume de download.
 

@@ -61,7 +61,7 @@ Outros alvos:
 ```bash
 npm run build                   # só a web UI  → apps/web/build
 npm run check                   # svelte-check
-cargo test --workspace          # 155 testes (108 no core, 47 no server)
+cargo test --workspace          # 190+ testes; ver a seção Testes
 cargo run -p save-sync-server   # server local (ver env vars abaixo)
 ```
 
@@ -627,7 +627,7 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 - [x] **Server — login** ([#4](https://github.com/Vinny1892/save-manual/issues/4)): senha com argon2id, sessão por cookie `HttpOnly`, trava de força bruta, bootstrap por `--create-user`, e os endpoints de admin (gerar código de pareamento, listar e revogar devices)
 - [ ] **Server**: histórico/retenção server-side rodando sozinha, title DBs centralizadas, SSE de progresso
 - [ ] **Web UI**: transporte HTTP (`invoke` → `fetch`, `listen` → `EventSource`), tela de login, navegador de diretórios server-side no lugar do picker nativo
-- [ ] **Client de PC**: vira agente + UI — watcher e proc-watch locais alimentando o protocolo
+- [x] **Client de PC** ([#8](https://github.com/Vinny1892/save-manual/issues/8)): fala o protocolo HTTP — varredura com reuso de hash, baseline no SQLite local, pareamento por código. Sem server pareado, segue no caminho antigo (rclone)
 - [ ] **Client Android** (Kotlin): bloqueado pela restrição de `Android/data` — ver `apps/android/README.md`
 - [ ] OAuth flow (Drive, Dropbox, OneDrive) via `config/create` + callback HTTP
 - [ ] Duckstation (PS1) — list-only, similar ao pcsx2
@@ -724,7 +724,7 @@ cargo test -p save-sync-server  # índice, storage e auth
 cargo build -p save-sync-server && bash scripts/e2e-protocol.sh
 ```
 
-Cobertura atual: **155 testes unitários** (108 em `crates/core`, 47 em `apps/server`) mais **20 checagens end-to-end** no `scripts/e2e-protocol.sh`. O client não tem teste próprio porque não tem lógica própria — virou camada fina sobre o core.
+Cobertura atual: **204 testes** — 129 unitários em `crates/core`, 73 em `apps/server`, 2 de integração client↔server (`crates/core/tests/sync_e2e.rs`), mais **31 checagens end-to-end** no `scripts/e2e-protocol.sh`. O client de PC não tem teste próprio porque não tem lógica própria — virou camada fina sobre o core.
 
 | Módulo | Cobertura |
 |---|---|

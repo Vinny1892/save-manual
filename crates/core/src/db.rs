@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +114,118 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
 
+    if version < 6 {
+        // Baseline do protocolo de sync: como a árvore estava no fim do
+        // último commit aceito. É o que o `rclone bisync` guardava nos
+        // listing files, e é o que distingue "apaguei" de "nunca tive".
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS sync_baseline (
+                emulator_id TEXT NOT NULL,
+                path        TEXT NOT NULL,
+                size        INTEGER NOT NULL,
+                mtime       INTEGER NOT NULL,
+                hash        TEXT NOT NULL,
+                PRIMARY KEY (emulator_id, path)
+             );
+             CREATE TABLE IF NOT EXISTS sync_state (
+                emulator_id TEXT PRIMARY KEY,
+                last_rev    INTEGER NOT NULL DEFAULT 0
+             );
+             PRAGMA user_version = 6;",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+// ─── baseline do protocolo ──────────────────────────────────────────────
+
+pub fn load_baseline(conn: &Connection, emu: &str) -> Result<crate::client::Baseline, String> {
+    let last_rev: Option<i64> = conn
+        .query_row(
+            "SELECT last_rev FROM sync_state WHERE emulator_id = ?1",
+            params![emu],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let mut stmt = conn
+        .prepare("SELECT path, size, mtime, hash FROM sync_baseline WHERE emulator_id = ?1")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![emu], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                crate::client::FileMeta {
+                    size: r.get::<_, i64>(1)? as u64,
+                    mtime: r.get(2)?,
+                    hash: r.get(3)?,
+                },
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let files = rows
+        .collect::<Result<crate::client::Tree, _>>()
+        .map_err(|e| e.to_string())?;
+
+    Ok(crate::client::Baseline {
+        last_rev: last_rev.unwrap_or(0) as u64,
+        files,
+    })
+}
+
+/// Grava o baseline inteiro numa transação. Substituição atômica: um
+/// baseline meio gravado descreveria um estado que nunca existiu, e o sync
+/// seguinte tomaria decisões erradas a partir dele.
+pub fn save_baseline(
+    conn: &mut Connection,
+    emu: &str,
+    baseline: &crate::client::Baseline,
+) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM sync_baseline WHERE emulator_id = ?1",
+        params![emu],
+    )
+    .map_err(|e| e.to_string())?;
+    {
+        let mut stmt = tx
+            .prepare(
+                "INSERT INTO sync_baseline (emulator_id, path, size, mtime, hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
+            .map_err(|e| e.to_string())?;
+        for (path, meta) in &baseline.files {
+            stmt.execute(params![emu, path, meta.size as i64, meta.mtime, meta.hash])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.execute(
+        "INSERT INTO sync_state (emulator_id, last_rev) VALUES (?1, ?2)
+         ON CONFLICT(emulator_id) DO UPDATE SET last_rev = ?2",
+        params![emu, baseline.last_rev as i64],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+/// Zera o baseline, forçando resync. É o equivalente do
+/// `mark_bisync_needs_resync` — usado quando um revert faz o estado
+/// "regredir" dos dois lados.
+pub fn clear_baseline(conn: &Connection, emu: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM sync_baseline WHERE emulator_id = ?1",
+        params![emu],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM sync_state WHERE emulator_id = ?1",
+        params![emu],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -506,12 +618,85 @@ mod tests {
     }
 
     #[test]
-    fn migration_advances_user_version_to_5() {
+    fn migration_advances_user_version_to_6() {
         let conn = fresh_db();
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 5);
+        assert_eq!(v, 6);
+    }
+
+    // ─── baseline do protocolo ──────────────────────────────────────────
+
+    fn meta(hash: &str) -> crate::client::FileMeta {
+        crate::client::FileMeta { size: 10, mtime: 100, hash: hash.into() }
+    }
+
+    #[test]
+    fn baseline_starts_empty_meaning_resync() {
+        let conn = fresh_db();
+        let b = load_baseline(&conn, "eden").unwrap();
+        assert_eq!(b.last_rev, 0);
+        assert!(b.files.is_empty());
+    }
+
+    #[test]
+    fn baseline_roundtrips() {
+        let mut conn = fresh_db();
+        let mut files = crate::client::Tree::new();
+        files.insert("user/save/a.sav".into(), meta("h1"));
+        files.insert("user/save/b.sav".into(), meta("h2"));
+        let baseline = crate::client::Baseline { last_rev: 7, files };
+
+        save_baseline(&mut conn, "eden", &baseline).unwrap();
+        let back = load_baseline(&conn, "eden").unwrap();
+        assert_eq!(back.last_rev, 7);
+        assert_eq!(back.files.len(), 2);
+        assert_eq!(back.files["user/save/a.sav"].hash, "h1");
+    }
+
+    #[test]
+    fn saving_replaces_instead_of_merging() {
+        // Um baseline é um retrato completo. Se salvar só acrescentasse,
+        // arquivo apagado continuaria no retrato e o sync seguinte acharia
+        // que ele sumiu de novo.
+        let mut conn = fresh_db();
+        let mut files = crate::client::Tree::new();
+        files.insert("velho.sav".into(), meta("h1"));
+        save_baseline(&mut conn, "eden", &crate::client::Baseline { last_rev: 1, files }).unwrap();
+
+        let mut novos = crate::client::Tree::new();
+        novos.insert("novo.sav".into(), meta("h2"));
+        save_baseline(&mut conn, "eden", &crate::client::Baseline { last_rev: 2, files: novos })
+            .unwrap();
+
+        let back = load_baseline(&conn, "eden").unwrap();
+        assert_eq!(back.files.len(), 1);
+        assert!(back.files.contains_key("novo.sav"));
+    }
+
+    #[test]
+    fn baseline_is_per_emulator() {
+        let mut conn = fresh_db();
+        let mut files = crate::client::Tree::new();
+        files.insert("a.sav".into(), meta("h1"));
+        save_baseline(&mut conn, "eden", &crate::client::Baseline { last_rev: 3, files }).unwrap();
+
+        assert_eq!(load_baseline(&conn, "pcsx2").unwrap().last_rev, 0);
+        assert!(load_baseline(&conn, "pcsx2").unwrap().files.is_empty());
+    }
+
+    #[test]
+    fn clearing_forces_resync() {
+        let mut conn = fresh_db();
+        let mut files = crate::client::Tree::new();
+        files.insert("a.sav".into(), meta("h1"));
+        save_baseline(&mut conn, "eden", &crate::client::Baseline { last_rev: 5, files }).unwrap();
+
+        clear_baseline(&conn, "eden").unwrap();
+        let back = load_baseline(&conn, "eden").unwrap();
+        assert_eq!(back.last_rev, 0, "last_rev 0 é o que dispara o resync");
+        assert!(back.files.is_empty());
     }
 
     #[test]
