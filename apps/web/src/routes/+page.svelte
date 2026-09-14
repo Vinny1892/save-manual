@@ -78,6 +78,11 @@
   <button class="smoke-btn" onclick={() => goto('/remotes')}>
     {$_("home.manage_remotes_btn")}
   </button>
+  {#if native}
+    <button class="smoke-btn" onclick={() => goto('/server')}>
+      [ {$_("home.server_btn")} ]
+    </button>
+  {/if}
   {#if rcloneTestResult}
     <span class="smoke-out" class:ok={rcloneTestOk} class:err={!rcloneTestOk}>
       {rcloneTestResult}

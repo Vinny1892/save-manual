@@ -1,19 +1,27 @@
-# Imagem do save-sync-server pro NAS (UGREEN DH4300 Plus = Rockchip RK3588,
-# arm64 — imagem amd64 não roda lá).
+# Imagem do save-sync-server.
+#
+# Publicada pelo CI em ghcr.io/vinny1892/save-manual, multi-arch (amd64 +
+# arm64). O NAS alvo é um UGREEN DH4300 Plus — Rockchip RK3588, arm64.
 #
 # Esta imagem NÃO compila: espera um contexto já montado, produzido pelo CI
-# no runner arm64 nativo. Compilar Rust sob emulação QEMU custa dezenas de
-# minutos; buildar nativo e só empacotar aqui leva segundos.
+# no runner **nativo** de cada arquitetura. Compilar Rust sob emulação QEMU
+# custa dezenas de minutos; buildar nativo e só empacotar aqui leva segundos.
 #
 # Contexto esperado:
-#   save-sync-server      binário linux/arm64
+#   save-sync-server      binário do alvo
 #   librclone.so          artefato do scripts/build-librclone.sh
 #   web/                  saída do `npm run build -w @save-sync/web`
 #
-# Build (a partir da raiz do repo, com dist/ montado):
-#   docker buildx build --platform linux/arm64 -f docker/Dockerfile -t save-sync-server dist/
+# Pra buildar à mão (a partir da raiz, com dist/ montado como o CI monta):
+#   docker buildx build -f docker/Dockerfile -t save-sync-server dist/
 
 FROM --platform=$TARGETPLATFORM debian:bookworm-slim
+
+# `image.source` é o que faz o pacote no ghcr aparecer ligado ao repositório
+# — sem ele a página do pacote fica órfã, sem README nem link pro código.
+LABEL org.opencontainers.image.source="https://github.com/Vinny1892/save-manual" \
+      org.opencontainers.image.description="save-sync server — sync de save data de emuladores" \
+      org.opencontainers.image.licenses="MIT"
 
 # ca-certificates: o server baixa as title DBs (blawar, PCSX2 GameIndex) por
 # HTTPS e fala com S3/R2 via rclone.

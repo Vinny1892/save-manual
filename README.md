@@ -16,6 +16,22 @@ Monorepo com três entregáveis em volta de um núcleo compartilhado:
 
 Rust + SvelteKit. UI estética CRT/terminal com 3 temas (dark / light / blue).
 
+## Guias
+
+| | |
+|---|---|
+| [**Rodando o server no NAS**](docs/deploy-nas.md) | container, primeiro usuário, pareamento, acesso de fora |
+| [**Client de PC**](docs/client-pc.md) | instalar, parear, apontar pros emuladores, conflitos |
+| [**Protocolo de sync**](docs/protocol.md) | o contrato entre client e server |
+
+A imagem do server é publicada a cada push pro `master`:
+
+```bash
+docker pull ghcr.io/vinny1892/save-manual:latest
+```
+
+Multi-arch (amd64 + arm64) — o mesmo `latest` serve o NAS e um PC.
+
 ## Por que essa divisão
 
 O watcher de filesystem e o de processo têm que rodar **na máquina onde o
@@ -61,7 +77,7 @@ Outros alvos:
 ```bash
 npm run build                   # só a web UI  → apps/web/build
 npm run check                   # svelte-check
-cargo test --workspace          # 190+ testes; ver a seção Testes
+cargo test --workspace          # 244 testes Rust; ver a seção Testes
 cargo run -p save-sync-server   # server local (ver env vars abaixo)
 ```
 
@@ -167,7 +183,7 @@ save-sync/
 │   │   └── src-tauri/
 │   │       ├── build.rs           # tauri-build + stage da lib do librclone
 │   │       ├── icons/             # gerados por `tauri icon`
-│   │       └── src/lib.rs         # comandos Tauri, AppState, watchers locais
+│   │       └── src/lib.rs         # comandos Tauri, AppState, watchers, pareamento
 │   │
 │   ├── server/src/                # axum — roda em Docker no NAS
 │   │   ├── main.rs                # bootstrap, SPA estática, /health, --pair
@@ -457,7 +473,7 @@ docker load < save-sync-server-arm64-<sha>.tar.gz
 docker compose -f docker/compose.yaml up -d
 ```
 
-Artefatos ficam na aba **Actions** do GitHub, agrupados por plataforma
+A imagem do server vai pro **ghcr.io** (`ghcr.io/vinny1892/save-manual:latest`, multi-arch) e os artefatos do client ficam na aba **Actions** do GitHub, agrupados por plataforma
 (`save-sync-windows-x64`, `save-sync-linux-x64`, `save-sync-linux-arm64`,
 `save-sync-server-arm64`), com o SHA curto no nome pra não colidirem entre
 runs. Não há criação automática de Release — pra publicar, tu baixa os

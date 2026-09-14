@@ -5,7 +5,15 @@
   import "../app.css";
   import { theme, applyStoredTheme, toggleTheme } from "$lib/theme";
   import { hydrateFromList, applyChanged, emulators } from "$lib/store";
-  import { invoke, isTauri, api, ApiError, listenServer } from "$lib/rpc";
+  import {
+    invoke,
+    isTauri,
+    api,
+    ApiError,
+    listenServer,
+    setServerBase,
+    setDeviceToken,
+  } from "$lib/rpc";
   import { _, isLoading } from "svelte-i18n";
   import {
     locale,
@@ -51,6 +59,23 @@
 
 
   /**
+   * No Tauri, as credenciais do server vivem no SQLite do client, que é a
+   * fonte da verdade. O `fetch` da UI precisa delas em mãos, então o boot
+   * espelha uma vez — sem isso, reabrir o app sairia sem autenticação
+   * mesmo com o device pareado.
+   */
+  async function mirrorServerCredentials() {
+    if (!isTauri()) return;
+    try {
+      const c = await invoke<{ url: string; token: string }>("server_credentials");
+      if (c.url) setServerBase(c.url);
+      if (c.token) setDeviceToken(c.token);
+    } catch {
+      /* client sem server pareado: segue no modo local */
+    }
+  }
+
+  /**
    * No browser, tudo exige sessão. A checagem roda uma vez no mount e manda
    * pro login quando falta — sem isso cada página mostraria a própria lista
    * de erros 401 em vez de uma tela de login.
@@ -78,7 +103,7 @@
 
     let cleanupEvents: (() => void) | undefined;
 
-    ensureAuth().then((ok) => {
+    mirrorServerCredentials().then(() => ensureAuth()).then((ok) => {
 
       if (!ok) return;
 

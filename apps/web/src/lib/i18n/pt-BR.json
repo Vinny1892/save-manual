@@ -66,7 +66,8 @@
     "btn_on": "[ on ]",
     "btn_off": "[ off ]",
     "aria_activate": "ativar",
-    "aria_deactivate": "desativar"
+    "aria_deactivate": "desativar",
+    "server_btn": "server do NAS"
   },
   "emulator": {
     "unit_not_found": "// unidade não encontrada · ",
@@ -299,5 +300,19 @@
     "locked": "conta bloqueada por tentativas demais",
     "unreachable": "não foi possível falar com o server",
     "bootstrap_hint": "Primeiro acesso? Crie o usuário no NAS com: save-sync-server --create-user <nome>"
+  },
+  "server": {
+    "url_label": "endereço do server",
+    "code_label": "código de pareamento",
+    "state_label": "estado",
+    "state_paired": "pareado",
+    "pair_btn": "parear",
+    "pairing": "pareando...",
+    "pair_intro": "Aponte este PC pro server do NAS. Os saves passam a sincronizar por ele em vez de ir direto pro destino local.",
+    "code_hint": "O código sai na web UI do server (ou por: save-sync-server --pair). Vale 10 minutos e serve uma vez só.",
+    "paired_ok": "pareado com sucesso",
+    "unpair_btn": "desparear",
+    "unpair_note": "Desparear apaga o token deste PC. O sync volta ao modo local até você parear de novo; nenhum save é apagado.",
+    "browser_note": "Esta tela só existe no client de PC — aqui você já está no server."
   }
 }

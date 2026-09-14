@@ -106,7 +106,7 @@ async fn pair_with_server(
     url: String,
     code: String,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<serde_json::Value, String> {
     let device_name = hostname();
     let paired = save_sync_core::client::ServerClient::pair(
         &url,
@@ -119,7 +119,10 @@ async fn pair_with_server(
     let s = state.lock().await;
     db::set_setting(&s.conn, SETTING_SERVER_URL, url.trim_end_matches('/'))?;
     db::set_setting(&s.conn, SETTING_DEVICE_TOKEN, &paired.device_token)?;
-    Ok(paired.device_id)
+    Ok(serde_json::json!({
+        "device_id": paired.device_id,
+        "device_token": paired.device_token,
+    }))
 }
 
 #[tauri::command]
@@ -129,6 +132,22 @@ async fn server_status(state: State<'_, AppState>) -> Result<serde_json::Value, 
     let paired = db::get_setting(&s.conn, SETTING_DEVICE_TOKEN)?
         .is_some_and(|t| !t.is_empty());
     Ok(serde_json::json!({ "url": url, "paired": paired }))
+}
+
+/// Credenciais pro frontend falar HTTP com o server.
+///
+/// Separado do `server_status` de propósito: status é chamado pra exibir
+/// estado e não deve carregar segredo junto. Este aqui é chamado uma vez no
+/// boot, pra espelhar no `localStorage` o que o SQLite já guarda — o banco
+/// continua sendo a fonte da verdade, e o espelho existe porque o `fetch`
+/// da UI precisa do token em mãos.
+#[tauri::command]
+async fn server_credentials(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let s = state.lock().await;
+    Ok(serde_json::json!({
+        "url": db::get_setting(&s.conn, SETTING_SERVER_URL)?.unwrap_or_default(),
+        "token": db::get_setting(&s.conn, SETTING_DEVICE_TOKEN)?.unwrap_or_default(),
+    }))
 }
 
 #[tauri::command]
@@ -1260,6 +1279,7 @@ pub fn run() {
             start_proc_watch,
             pair_with_server,
             server_status,
+            server_credentials,
             unpair_server,
             stop_proc_watch,
             detect_save_paths,

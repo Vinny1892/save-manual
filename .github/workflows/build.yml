@@ -2,7 +2,7 @@ name: build
 
 # Todo push pro master compila os artefatos do monorepo:
 #   client-pc  → Windows (NSIS + MSI + portable) e Linux x64/arm64 (AppImage + .deb)
-#   server     → imagem Docker arm64 pro NAS
+#   server     → imagem Docker multi-arch publicada no ghcr.io
 # Tudo sai como artifact da run — nenhum GitHub Release é criado automaticamente.
 on:
   push:
@@ -142,17 +142,35 @@ jobs:
           path: dist/*
           if-no-files-found: warn
 
+
+  # ─── imagem do server ─────────────────────────────────────────────────
+  #
+  # Uma imagem por arquitetura, buildada no runner nativo, empurrada por
+  # digest; um job final junta as duas num manifesto multi-arch. É o padrão
+  # da documentação do buildx, e existe por um motivo prático: compilar Rust
+  # sob emulação QEMU leva dezenas de minutos, enquanto nativo leva três.
+  #
+  # O Dockerfile não compila nada — só empacota o que o job já produziu.
   server:
-    # Runner arm64 nativo: o NAS é RK3588. Compilar Rust sob QEMU levaria
-    # dezenas de minutos, então a imagem só empacota o que é buildado aqui.
-    runs-on: ubuntu-22.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            arch: amd64
+            librclone_dir: x86_64-unknown-linux-gnu
+          - platform: ubuntu-22.04-arm
+            arch: arm64
+            librclone_dir: aarch64-unknown-linux-gnu
+
+    runs-on: ${{ matrix.platform }}
+
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: short sha
-        id: sha
-        run: echo "short=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@v4
         with:
@@ -164,6 +182,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
+          # Não há go.sum no repo — o Go só é usado pelo script do
+          # librclone, que compila fora da árvore. Sem isto a action loga um
+          # aviso de cache toda run.
+          cache: false
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -176,7 +198,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vendor/librclone
-          key: librclone-v2-aarch64-unknown-linux-gnu-${{ hashFiles('scripts/build-librclone.sh') }}
+          key: librclone-v2-${{ matrix.librclone_dir }}-${{ hashFiles('scripts/build-librclone.sh') }}
 
       - name: build librclone
         if: steps.cache-librclone.outputs.cache-hit != 'true'
@@ -195,19 +217,107 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/save-sync-server dist/
-          cp vendor/librclone/aarch64-unknown-linux-gnu/librclone.so dist/
+          cp vendor/librclone/${{ matrix.librclone_dir }}/librclone.so dist/
           cp -r apps/web/build dist/web
+          cp docker/Dockerfile dist/
           ls -la dist/
 
-      - name: build image
+      # ghcr exige o nome do repositório em minúsculas; o do GitHub não é.
+      - name: image name
+        id: img
+        run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: build e push por digest
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: dist
+          file: dist/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ steps.img.outputs.name }},push-by-digest=true,name-canonical=true,push=true
+
+      # O manifesto é montado no job seguinte, que precisa saber os digests.
+      # A remoção do prefixo `sha256:` acontece no bash: expressão do GitHub
+      # não faz substring desse jeito.
+      - name: exporta digest
+        shell: bash
         run: |
-          docker build -f docker/Dockerfile -t save-sync-server:${{ steps.sha.outputs.short }} dist/
-          docker save save-sync-server:${{ steps.sha.outputs.short }} \
-            | gzip > save-sync-server-arm64-${{ steps.sha.outputs.short }}.tar.gz
-          ls -lh save-sync-server-arm64-*.tar.gz
+          mkdir -p /tmp/digests
+          digest='${{ steps.push.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: save-sync-server-arm64-${{ steps.sha.outputs.short }}
-          path: save-sync-server-arm64-*.tar.gz
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
           if-no-files-found: error
+
+      # Tarball pra quem preferir carregar direto no NAS sem passar pelo
+      # registry (`docker load < ...`). Só no arm64, que é o alvo do DH4300.
+      - name: tarball offline (arm64)
+        if: matrix.arch == 'arm64'
+        run: |
+          docker buildx build --platform linux/arm64 --load \
+            -t save-sync-server:${{ github.sha }} -f dist/Dockerfile dist
+          docker save save-sync-server:${{ github.sha }} \
+            | gzip > save-sync-server-arm64.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.arch == 'arm64'
+        with:
+          name: save-sync-server-arm64-tarball
+          path: save-sync-server-arm64.tar.gz
+          if-no-files-found: error
+
+  # Junta as imagens por arquitetura num manifesto só, pra que
+  # `docker pull ghcr.io/<repo>:latest` funcione tanto no NAS arm64 quanto
+  # num PC amd64 sem ninguém escolher tag.
+  server-manifest:
+    needs: server
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: short sha
+        id: sha
+        run: echo "short=$(echo '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: image name
+        id: img
+        run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: cria o manifesto
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            -t ${{ steps.img.outputs.name }}:latest \
+            -t ${{ steps.img.outputs.name }}:${{ steps.sha.outputs.short }} \
+            $(printf '${{ steps.img.outputs.name }}@sha256:%s ' *)
+
+      - name: confere o resultado
+        run: docker buildx imagetools inspect ${{ steps.img.outputs.name }}:latest

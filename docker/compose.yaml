@@ -1,14 +1,36 @@
-# Deploy no NAS. `docker compose up -d` depois de carregar a imagem
-# (docker load < save-sync-server-arm64.tar).
+# Deploy do save-sync-server. Ver docs/deploy-nas.md pro passo a passo.
+#
+#   docker compose pull && docker compose up -d
+#
+# A imagem é multi-arch: o mesmo `latest` serve o NAS arm64 e um PC amd64.
+
 services:
   save-sync-server:
-    image: save-sync-server:latest
+    image: ghcr.io/vinny1892/save-manual:latest
     container_name: save-sync-server
     restart: unless-stopped
+
     ports:
+      # Publica só no loopback quando estiver atrás de um reverse proxy ou
+      # do Tailscale. Pra acessar direto da LAN, troque por "8787:8787".
       - "8787:8787"
+
     volumes:
-      # Ajusta o caminho do host pro teu volume do array — não deixa no eMMC.
+      # SQLite, saves e histórico. Aponte pro volume do array do NAS — não
+      # deixe no eMMC de 32 GB, que é soldado e não se troca.
       - /volume1/docker/save-sync:/data
+
     environment:
       RUST_LOG: info
+      # Ligue só atrás de TLS. Em HTTP na LAN isto quebra o login, porque o
+      # browser recusa mandar um cookie `Secure` por conexão não cifrada.
+      # SAVE_SYNC_SECURE_COOKIE: "1"
+
+    # O binário responde `--health-check` com um TCP connect no próprio
+    # endereço de escuta; a imagem é slim e não tem curl.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/save-sync-server", "--health-check"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

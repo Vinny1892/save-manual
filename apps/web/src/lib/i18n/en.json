@@ -66,7 +66,8 @@
     "btn_on": "[ on ]",
     "btn_off": "[ off ]",
     "aria_activate": "activate",
-    "aria_deactivate": "deactivate"
+    "aria_deactivate": "deactivate",
+    "server_btn": "NAS server"
   },
   "emulator": {
     "unit_not_found": "// unit not found · ",
@@ -299,5 +300,19 @@
     "locked": "account locked after too many attempts",
     "unreachable": "could not reach the server",
     "bootstrap_hint": "First time? Create the user on the NAS with: save-sync-server --create-user <name>"
+  },
+  "server": {
+    "url_label": "server address",
+    "code_label": "pairing code",
+    "state_label": "state",
+    "state_paired": "paired",
+    "pair_btn": "pair",
+    "pairing": "pairing...",
+    "pair_intro": "Point this PC at the NAS server. Saves start syncing through it instead of going to a local destination.",
+    "code_hint": "The code comes from the server web UI (or: save-sync-server --pair). Valid for 10 minutes, single use.",
+    "paired_ok": "paired successfully",
+    "unpair_btn": "unpair",
+    "unpair_note": "Unpairing deletes this PC token. Sync falls back to local mode until you pair again; no save is deleted.",
+    "browser_note": "This screen only exists in the PC client — here you are already on the server."
   }
 }
