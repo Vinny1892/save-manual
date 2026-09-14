@@ -77,7 +77,7 @@ Outros alvos:
 ```bash
 npm run build                   # só a web UI  → apps/web/build
 npm run check                   # svelte-check
-cargo test --workspace          # 244 testes Rust; ver a seção Testes
+cargo test --workspace          # 248 testes Rust; ver a seção Testes
 cargo run -p save-sync-server   # server local (ver env vars abaixo)
 ```
 
@@ -741,7 +741,7 @@ cargo test -p save-sync-server  # índice, storage e auth
 cargo build -p save-sync-server && bash scripts/e2e-protocol.sh
 ```
 
-Cobertura atual: **250 testes** — 244 em Rust e 6 em Kotlin (`apps/android/protocol`, dos quais 2 são integração contra o binário do server). Detalhe do lado Rust: **244 testes** — 136 unitários em `crates/core`, 75 em `apps/server`, 2 de integração client↔server (`crates/core/tests/sync_e2e.rs`), mais **31 checagens end-to-end** no `scripts/e2e-protocol.sh`. O client de PC não tem teste próprio porque não tem lógica própria — virou camada fina sobre o core.
+Cobertura atual: **254 testes** — 248 em Rust e 6 em Kotlin (`apps/android/protocol`, dos quais 2 são integração contra o binário do server). Detalhe do lado Rust: **248 testes** — 140 unitários em `crates/core`, 75 em `apps/server`, 2 de integração client↔server (`crates/core/tests/sync_e2e.rs`), mais **31 checagens end-to-end** no `scripts/e2e-protocol.sh`. O client de PC não tem teste próprio porque não tem lógica própria — virou camada fina sobre o core.
 
 | Módulo | Cobertura |
 |---|---|

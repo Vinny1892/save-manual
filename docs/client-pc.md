@@ -83,6 +83,11 @@ Três gatilhos, configuráveis por emulador no card **[ ops ]**:
 | watcher | mudança na pasta de saves, com 2s de espera pra acumular |
 | proc-watch | quando o processo do emulador **fecha** |
 
+Os três seguem exatamente o mesmo caminho: com server pareado vão pelo
+protocolo HTTP, sem server vão pelo rclone. E cada disparo relê a
+configuração do banco — parear o server ou trocar a política de histórico
+passa a valer no ciclo seguinte, sem precisar desligar e religar o watcher.
+
 O proc-watch é o mais confiável na prática: o emulador costuma escrever o
 save no fim, e sincronizar quando ele fecha pega o estado completo em vez
 de um arquivo pela metade. Exige preencher o nome do processo (`eden.exe`,

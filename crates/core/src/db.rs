@@ -139,6 +139,47 @@ fn migrate(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+// ─── configuração do server ─────────────────────────────────────────────
+
+pub const SETTING_SERVER_URL: &str = "server_url";
+pub const SETTING_DEVICE_TOKEN: &str = "device_token";
+
+/// Endereço e token do server pareado.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServerConfig {
+    pub url: String,
+    pub token: String,
+}
+
+/// Há server pareado?
+///
+/// Esta é **a** decisão do client: com server, o sync vai pelo protocolo
+/// HTTP; sem, segue pelo rclone contra o destino local. Os três gatilhos
+/// (botão, watcher, proc-watch) consultam a mesma função — quando essa
+/// decisão estava espalhada, dois deles ficaram pra trás.
+///
+/// Desparear grava string vazia em vez de apagar a linha, então campo vazio
+/// conta como ausente.
+pub fn server_config(conn: &Connection) -> Option<ServerConfig> {
+    let url = get_setting(conn, SETTING_SERVER_URL).ok()??;
+    let token = get_setting(conn, SETTING_DEVICE_TOKEN).ok()??;
+    let url = url.trim().trim_end_matches('/').to_string();
+    let token = token.trim().to_string();
+    if url.is_empty() || token.is_empty() {
+        return None;
+    }
+    Some(ServerConfig { url, token })
+}
+
+pub fn set_server_config(conn: &Connection, url: &str, token: &str) -> Result<(), String> {
+    set_setting(conn, SETTING_SERVER_URL, url.trim().trim_end_matches('/'))?;
+    set_setting(conn, SETTING_DEVICE_TOKEN, token.trim())
+}
+
+pub fn clear_server_config(conn: &Connection) -> Result<(), String> {
+    set_server_config(conn, "", "")
+}
+
 // ─── baseline do protocolo ──────────────────────────────────────────────
 
 pub fn load_baseline(conn: &Connection, emu: &str) -> Result<crate::client::Baseline, String> {
@@ -624,6 +665,53 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, 6);
+    }
+
+    // ─── configuração do server ─────────────────────────────────────────
+
+    #[test]
+    fn no_server_configured_means_local_sync() {
+        let conn = fresh_db();
+        assert_eq!(server_config(&conn), None);
+    }
+
+    #[test]
+    fn server_config_roundtrips_and_normalizes() {
+        let conn = fresh_db();
+        set_server_config(&conn, "  http://nas:8787/  ", " tok123 ").unwrap();
+        assert_eq!(
+            server_config(&conn),
+            Some(ServerConfig {
+                url: "http://nas:8787".into(),
+                token: "tok123".into()
+            })
+        );
+    }
+
+    #[test]
+    fn half_configured_server_is_treated_as_absent() {
+        // URL sem token (ou o contrário) não dá pra usar: tentar
+        // sincronizar assim daria 401 em vez de cair no caminho local.
+        let conn = fresh_db();
+        set_setting(&conn, SETTING_SERVER_URL, "http://nas:8787").unwrap();
+        assert_eq!(server_config(&conn), None);
+
+        set_setting(&conn, SETTING_DEVICE_TOKEN, "tok").unwrap();
+        set_setting(&conn, SETTING_SERVER_URL, "").unwrap();
+        assert_eq!(server_config(&conn), None);
+    }
+
+    #[test]
+    fn unpairing_falls_back_to_local_sync() {
+        // Desparear grava string vazia em vez de apagar a linha; campo
+        // vazio tem que contar como ausente, senão o client seguiria
+        // tentando falar com um server que não é mais dele.
+        let conn = fresh_db();
+        set_server_config(&conn, "http://nas:8787", "tok123").unwrap();
+        assert!(server_config(&conn).is_some());
+
+        clear_server_config(&conn).unwrap();
+        assert_eq!(server_config(&conn), None);
     }
 
     // ─── baseline do protocolo ──────────────────────────────────────────

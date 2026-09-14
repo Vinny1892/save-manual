@@ -86,19 +86,15 @@ fn progress_sink(app: &AppHandle) -> Arc<dyn ProgressSink> {
 
 // ─── pareamento com o server ────────────────────────────────────────────
 
-const SETTING_SERVER_URL: &str = "server_url";
-const SETTING_DEVICE_TOKEN: &str = "device_token";
-
-/// Server configurado, se houver. Quando devolve `None`, o client ainda
-/// está no modo antigo (rclone direto pro destino).
+/// Server configurado, se houver. Quando devolve `None`, o client sincroniza
+/// no modo antigo (rclone direto pro destino).
+///
+/// A decisão mora em `core::db::server_config`, que é testada — aqui é só a
+/// tradução pro cliente HTTP.
 async fn server_client(state: &State<'_, AppState>) -> Option<save_sync_core::client::ServerClient> {
     let s = state.lock().await;
-    let url = db::get_setting(&s.conn, SETTING_SERVER_URL).ok().flatten()?;
-    let token = db::get_setting(&s.conn, SETTING_DEVICE_TOKEN).ok().flatten()?;
-    if url.is_empty() || token.is_empty() {
-        return None;
-    }
-    Some(save_sync_core::client::ServerClient::new(&url, &token))
+    let cfg = db::server_config(&s.conn)?;
+    Some(save_sync_core::client::ServerClient::new(&cfg.url, &cfg.token))
 }
 
 #[tauri::command]
@@ -117,8 +113,7 @@ async fn pair_with_server(
     .await?;
 
     let s = state.lock().await;
-    db::set_setting(&s.conn, SETTING_SERVER_URL, url.trim_end_matches('/'))?;
-    db::set_setting(&s.conn, SETTING_DEVICE_TOKEN, &paired.device_token)?;
+    db::set_server_config(&s.conn, &url, &paired.device_token)?;
     Ok(serde_json::json!({
         "device_id": paired.device_id,
         "device_token": paired.device_token,
@@ -128,10 +123,11 @@ async fn pair_with_server(
 #[tauri::command]
 async fn server_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let s = state.lock().await;
-    let url = db::get_setting(&s.conn, SETTING_SERVER_URL)?.unwrap_or_default();
-    let paired = db::get_setting(&s.conn, SETTING_DEVICE_TOKEN)?
-        .is_some_and(|t| !t.is_empty());
-    Ok(serde_json::json!({ "url": url, "paired": paired }))
+    let cfg = db::server_config(&s.conn);
+    Ok(serde_json::json!({
+        "url": cfg.as_ref().map(|c| c.url.clone()).unwrap_or_default(),
+        "paired": cfg.is_some(),
+    }))
 }
 
 /// Credenciais pro frontend falar HTTP com o server.
@@ -144,18 +140,17 @@ async fn server_status(state: State<'_, AppState>) -> Result<serde_json::Value, 
 #[tauri::command]
 async fn server_credentials(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let s = state.lock().await;
-    Ok(serde_json::json!({
-        "url": db::get_setting(&s.conn, SETTING_SERVER_URL)?.unwrap_or_default(),
-        "token": db::get_setting(&s.conn, SETTING_DEVICE_TOKEN)?.unwrap_or_default(),
-    }))
+    let cfg = db::server_config(&s.conn).unwrap_or(db::ServerConfig {
+        url: String::new(),
+        token: String::new(),
+    });
+    Ok(serde_json::json!({ "url": cfg.url, "token": cfg.token }))
 }
 
 #[tauri::command]
 async fn unpair_server(state: State<'_, AppState>) -> Result<(), String> {
     let s = state.lock().await;
-    db::set_setting(&s.conn, SETTING_SERVER_URL, "")?;
-    db::set_setting(&s.conn, SETTING_DEVICE_TOKEN, "")?;
-    Ok(())
+    db::clear_server_config(&s.conn)
 }
 
 fn hostname() -> String {
@@ -263,19 +258,38 @@ async fn set_enabled(
     Ok(())
 }
 
-#[tauri::command]
-async fn sync_now(
-    id: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
+/// Um ciclo de sync, seja qual for o gatilho.
+///
+/// Existe uma função só porque os três gatilhos — botão, watcher de
+/// filesystem e proc-watch — têm que tomar **a mesma decisão** sobre por
+/// onde sincronizar. Quando essa lógica estava duplicada nos três lugares,
+/// o caminho do server entrou só no botão e os dois watchers continuaram
+/// falando rclone com o destino antigo: o NAS ficava configurado e o sync
+/// automático passava ao largo dele.
+///
+/// Com server pareado vai pelo protocolo HTTP e o destino local sai de
+/// cena. Sem server, segue o caminho antigo — o client continua utilizável
+/// sozinho enquanto o NAS não existe.
+async fn run_sync(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    id: &str,
 ) -> Result<(), String> {
-    // Com server pareado, o sync vai pelo protocolo HTTP e o destino local
-    // (rclone/pasta) sai de cena. Sem server, segue o caminho antigo — o
-    // client continua utilizável sozinho enquanto o NAS não existe.
-    if let Some(server) = server_client(&state).await {
+    let result = sync_once(app, state, id).await;
+    record_result(id, &result, state).await;
+    emit_changed(app, state, id).await;
+    result
+}
+
+async fn sync_once(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    id: &str,
+) -> Result<(), String> {
+    if let Some(server) = server_client(state).await {
         let source = {
             let s = state.lock().await;
-            let emu = db::get(&s.conn, &id)?;
+            let emu = db::get(&s.conn, id)?;
             if !emu.enabled {
                 return Err("emulator_disabled".into());
             }
@@ -284,35 +298,35 @@ async fn sync_now(
             }
             std::path::PathBuf::from(&emu.source_path)
         };
-
-        let result = sync_via_server(&server, &id, &source, &state)
-            .await
-            .map(|_| ());
-        record_result(&id, &result, &state).await;
-        emit_changed(&app, &state, &id).await;
-        return result;
+        return sync_via_server(&server, id, &source, state).await.map(|_| ());
     }
 
     let (source, emu, history) = {
         let s = state.lock().await;
-        let emu = db::get(&s.conn, &id)?;
+        let emu = db::get(&s.conn, id)?;
         if !emu.enabled {
             return Err("emulator_disabled".into());
         }
         validate_config(&emu)?;
-        let history = db::get_history_settings(&s.conn, &id)?;
+        let history = db::get_history_settings(&s.conn, id)?;
         (std::path::PathBuf::from(&emu.source_path), emu, history)
     };
 
-    let outcome = do_sync_async(emu, source, history, progress_sink(&app)).await;
+    let outcome = do_sync_async(emu, source, history, progress_sink(app)).await;
     if matches!(&outcome, Ok(SyncOutcome { initial: true })) {
         let s = state.lock().await;
-        let _ = db::mark_bisync_initialized(&s.conn, &id);
+        let _ = db::mark_bisync_initialized(&s.conn, id);
     }
-    let result = outcome.map(|_| ());
-    record_result(&id, &result, &state).await;
-    emit_changed(&app, &state, &id).await;
-    result
+    outcome.map(|_| ())
+}
+
+#[tauri::command]
+async fn sync_now(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    run_sync(&app, &state, &id).await
 }
 
 #[tauri::command]
@@ -321,7 +335,10 @@ async fn start_watch(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let (source, emu) = {
+    // Só o caminho a observar sai daqui. O estado do emulador é relido a
+    // cada disparo pelo `run_sync` — assim mudar a política de histórico ou
+    // parear o server passa a valer sem reiniciar o watcher.
+    let source = {
         let s = state.lock().await;
         if s.watchers.contains_key(&id) {
             return Ok(());
@@ -331,7 +348,7 @@ async fn start_watch(
             return Err("emulator_disabled".into());
         }
         validate_config(&emu)?;
-        (std::path::PathBuf::from(&emu.source_path), emu)
+        std::path::PathBuf::from(&emu.source_path)
     };
 
     let (event_tx, mut event_rx) = mpsc::channel::<()>(16);
@@ -356,18 +373,10 @@ async fn start_watch(
                         }
                     }
                     let app_state = app_clone.state::<AppState>();
-                    let history = {
-                        let s = app_state.lock().await;
-                        db::get_history_settings(&s.conn, &id_clone).unwrap_or_else(|_| HistorySettings::defaults_for(&id_clone))
-                    };
-                    let outcome = do_sync_async(emu.clone(), source.clone(), history, progress_sink(&app_clone)).await;
-                    if matches!(&outcome, Ok(SyncOutcome { initial: true })) {
-                        let s = app_state.lock().await;
-                        let _ = db::mark_bisync_initialized(&s.conn, &id_clone);
-                    }
-                    let result = outcome.map(|_| ());
-                    record_result(&id_clone, &result, &app_state).await;
-                    emit_changed(&app_clone, &app_state, &id_clone).await;
+                    // Falha de sync disparado por watcher não tem pra quem
+                    // ser devolvida; o `run_sync` já gravou em `last_error`,
+                    // que é o que a UI mostra.
+                    let _ = run_sync(&app_clone, &app_state, &id_clone).await;
                 }
                 _ = stop_rx.recv() => break,
             }
@@ -399,7 +408,9 @@ async fn start_proc_watch(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let (source, emu, proc_name) = {
+    // Só o nome do processo sai daqui; o resto do estado é relido a cada
+    // disparo pelo `run_sync`.
+    let proc_name = {
         let s = state.lock().await;
         if s.proc_watchers.contains_key(&id) {
             return Ok(());
@@ -412,8 +423,7 @@ async fn start_proc_watch(
             return Err("process_name_missing".into());
         }
         validate_config(&emu)?;
-        let proc_name = emu.process_name.clone();
-        (std::path::PathBuf::from(&emu.source_path), emu, proc_name)
+        emu.process_name.clone()
     };
 
     let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
@@ -433,20 +443,12 @@ async fn start_proc_watch(
                         .any(|p| proc_matches(p.name(), &proc_name));
 
                     if was_running && !is_running {
+                        // O emulador fechou: é o instante em que o save
+                        // está completo em disco. Mesmo caminho do botão e
+                        // do watcher — a decisão de por onde sincronizar
+                        // mora num lugar só.
                         let app_state = app_clone.state::<AppState>();
-                        let history = {
-                            let s = app_state.lock().await;
-                            db::get_history_settings(&s.conn, &id_clone)
-                                .unwrap_or_else(|_| HistorySettings::defaults_for(&id_clone))
-                        };
-                        let outcome = do_sync_async(emu.clone(), source.clone(), history, progress_sink(&app_clone)).await;
-                        if matches!(&outcome, Ok(SyncOutcome { initial: true })) {
-                            let s = app_state.lock().await;
-                            let _ = db::mark_bisync_initialized(&s.conn, &id_clone);
-                        }
-                        let result = outcome.map(|_| ());
-                        record_result(&id_clone, &result, &app_state).await;
-                        emit_changed(&app_clone, &app_state, &id_clone).await;
+                        let _ = run_sync(&app_clone, &app_state, &id_clone).await;
                     }
 
                     was_running = is_running;
