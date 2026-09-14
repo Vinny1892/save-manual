@@ -5,7 +5,7 @@
   import "../app.css";
   import { theme, applyStoredTheme, toggleTheme } from "$lib/theme";
   import { hydrateFromList, applyChanged, emulators } from "$lib/store";
-  import { invoke, isTauri, api, ApiError } from "$lib/rpc";
+  import { invoke, isTauri, api, ApiError, listenServer } from "$lib/rpc";
   import { _, isLoading } from "svelte-i18n";
   import {
     locale,
@@ -49,7 +49,6 @@
   }
   let activeSync = $state<SyncProgress | null>(null);
 
-  let authChecked = $state(false);
 
   /**
    * No browser, tudo exige sessão. A checagem roda uma vez no mount e manda
@@ -80,15 +79,16 @@
     let cleanupEvents: (() => void) | undefined;
 
     ensureAuth().then((ok) => {
-      authChecked = true;
+
       if (!ok) return;
 
       invoke<any[]>("list_emulators")
         .then((list) => hydrateFromList(list))
         .catch(() => {});
 
-      // Eventos são IPC do Tauri. O equivalente no browser é SSE, que entra
-      // junto com o progresso server-side (#5).
+      // Dois canais pro mesmo propósito: IPC dentro do Tauri (onde há
+      // progresso local de sync) e SSE no browser (onde só chega o que é
+      // estado compartilhado do server).
       if (isTauri()) {
         import("@tauri-apps/api/event").then(({ listen }) => {
           const unEmulator = listen<any>("emulator-changed", (e) =>
@@ -101,6 +101,16 @@
             unEmulator.then((fn) => fn());
             unProgress.then((fn) => fn());
           };
+        });
+      } else {
+        cleanupEvents = listenServer((event) => {
+          // Commit de outro device muda o que está sincronizado: recarrega
+          // a lista em vez de tentar remendar o estado local.
+          if (event.type === "emulator-changed") {
+            invoke<any[]>("list_emulators")
+              .then((list) => hydrateFromList(list))
+              .catch(() => {});
+          }
         });
       }
     });

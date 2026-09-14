@@ -377,8 +377,16 @@ pub fn put_entry(conn: &Connection, emu: &str, entry: &IndexEntry) -> Result<(),
 
 /// Marca como tombstone em vez de apagar a linha — é o tombstone que
 /// propaga a deleção pra quem estava offline.
+///
+/// O `mtime` guarda **quando a deleção aconteceu**, não o mtime do arquivo
+/// que sumiu. É esse carimbo que a janela de retenção mede: sem ele
+/// (`IndexEntry::tombstone` deixa zero) todo tombstone pareceria
+/// infinitamente velho e seria podado no primeiro prune, forçando resync em
+/// todos os devices.
 pub fn tombstone(conn: &Connection, emu: &str, path: &str, rev: Rev) -> Result<(), String> {
-    put_entry(conn, emu, &IndexEntry::tombstone(path, rev))
+    let mut entry = IndexEntry::tombstone(path, rev);
+    entry.mtime = chrono::Utc::now().timestamp_millis();
+    put_entry(conn, emu, &entry)
 }
 
 /// Menor `last_rev` que o server ainda consegue atender sem resync.
@@ -615,6 +623,37 @@ mod tests {
         assert_eq!(e.rev, 2);
         assert_eq!(e.hash, "h2");
         assert_eq!(changes_since(&conn, "eden", 0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn tombstone_records_when_the_deletion_happened() {
+        // A janela de retenção mede por este carimbo. Com mtime zero — que
+        // é o default do `IndexEntry::tombstone` — todo tombstone pareceria
+        // velhíssimo e seria podado no primeiro prune, forçando resync em
+        // todos os devices.
+        let conn = mem();
+        let antes = chrono::Utc::now().timestamp_millis();
+        tombstone(&conn, "eden", "apagado", 1).unwrap();
+
+        let e = get_entry(&conn, "eden", "apagado").unwrap().unwrap();
+        assert!(e.mtime >= antes, "tombstone sem carimbo de tempo: {}", e.mtime);
+    }
+
+    #[test]
+    fn fresh_tombstones_survive_an_age_based_prune() {
+        let conn = mem();
+        tombstone(&conn, "eden", "recem-apagado", 1).unwrap();
+
+        // Corte de 90 dias atrás: nada recente deve cair.
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - 90 * 24 * 60 * 60 * 1000;
+        let velhos: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_index WHERE deleted = 1 AND mtime < ?1",
+                params![cutoff_ms],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(velhos, 0);
     }
 
     #[test]

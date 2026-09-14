@@ -8,7 +8,7 @@ Monorepo com três entregáveis em volta de um núcleo compartilhado:
 
 | Componente | O que é | Estado |
 |---|---|---|
-| `apps/server` | Server que roda em Docker no NAS. Dono do storage, do índice e do histórico, com login. Retenção automática e SSE pendentes. | parcial |
+| `apps/server` | Server que roda em Docker no NAS. Dono do storage, do índice, do histórico e das title DBs, com login e SSE. | funcional |
 | `apps/client-pc` | Client de PC: UI Tauri 2 + agente local (watcher de filesystem e de processo). | funcional |
 | `apps/android` | Client Android nativo (Kotlin). | não iniciado |
 | `apps/web` | UI SvelteKit — servida pelo server e embutida no client de PC. | funcional |
@@ -625,13 +625,13 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 - [x] **Protocolo HTTP** ([#2](https://github.com/Vinny1892/save-manual/issues/2)): especificado em [`docs/protocol.md`](docs/protocol.md) — estado por `rev` monotônico + baseline no client (o que os listing files do bisync faziam), ciclo plan → transfer → commit, tombstones pra deleção, SHA-256, transfer por arquivo
 - [x] **Server — API do protocolo** ([#3](https://github.com/Vinny1892/save-manual/issues/3)): pareamento, `plan`/`blob`/`commit`, índice em SQLite, staging com verificação de hash na ingestão, commit atômico com snapshot de history e delta. Pareamento por `--pair` até o login existir
 - [x] **Server — login** ([#4](https://github.com/Vinny1892/save-manual/issues/4)): senha com argon2id, sessão por cookie `HttpOnly`, trava de força bruta, bootstrap por `--create-user`, e os endpoints de admin (gerar código de pareamento, listar e revogar devices)
-- [ ] **Server**: histórico/retenção server-side rodando sozinha, title DBs centralizadas, SSE de progresso
+- [x] **Server — title DBs, SSE e retenção** ([#5](https://github.com/Vinny1892/save-manual/issues/5)): as bases de título vivem só no server (os clients pararam de baixar 93 MB cada), eventos por SSE, e retenção + poda de tombstone rodando ao fim de cada commit
 - [ ] **Web UI**: transporte HTTP (`invoke` → `fetch`, `listen` → `EventSource`), tela de login, navegador de diretórios server-side no lugar do picker nativo
 - [x] **Client de PC** ([#8](https://github.com/Vinny1892/save-manual/issues/8)): fala o protocolo HTTP — varredura com reuso de hash, baseline no SQLite local, pareamento por código. Sem server pareado, segue no caminho antigo (rclone)
 - [ ] **Client Android** (Kotlin): bloqueado pela restrição de `Android/data` — ver `apps/android/README.md`
 - [ ] OAuth flow (Drive, Dropbox, OneDrive) via `config/create` + callback HTTP
 - [ ] Duckstation (PS1) — list-only, similar ao pcsx2
-- [ ] Corrigir o pacote do eden Android em `detect.rs` (`org.eden.android` → `dev.eden.eden_emulator`) — o caminho atual nunca casou
+- [x] Corrigido o pacote do eden Android em `detect.rs` ([#10](https://github.com/Vinny1892/save-manual/issues/10)): era `org.eden.android`, é `dev.eden.eden_emulator`
 
 ---
 
@@ -724,7 +724,7 @@ cargo test -p save-sync-server  # índice, storage e auth
 cargo build -p save-sync-server && bash scripts/e2e-protocol.sh
 ```
 
-Cobertura atual: **204 testes** — 129 unitários em `crates/core`, 73 em `apps/server`, 2 de integração client↔server (`crates/core/tests/sync_e2e.rs`), mais **31 checagens end-to-end** no `scripts/e2e-protocol.sh`. O client de PC não tem teste próprio porque não tem lógica própria — virou camada fina sobre o core.
+Cobertura atual: **244 testes** — 136 unitários em `crates/core`, 75 em `apps/server`, 2 de integração client↔server (`crates/core/tests/sync_e2e.rs`), mais **31 checagens end-to-end** no `scripts/e2e-protocol.sh`. O client de PC não tem teste próprio porque não tem lógica própria — virou camada fina sobre o core.
 
 | Módulo | Cobertura |
 |---|---|

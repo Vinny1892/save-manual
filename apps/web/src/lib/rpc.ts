@@ -181,3 +181,42 @@ export async function invoke<T>(cmd: string, args?: Args): Promise<T> {
 export function supports(cmd: string): boolean {
   return cmd in SERVER_ROUTES || isTauri();
 }
+
+export interface ServerEvent {
+  type: string;
+  payload: any;
+}
+
+/**
+ * Escuta os eventos do server por SSE. É o equivalente do `listen()` do
+ * Tauri pro que é estado compartilhado — commit de outro device, progresso
+ * do refresh das title DBs.
+ *
+ * O `EventSource` reconecta sozinho quando a conexão cai, que é o
+ * comportamento que se quer num celular trocando de rede. Devolve a função
+ * de parar.
+ */
+export function listenServer(handler: (e: ServerEvent) => void): () => void {
+  // No Tauri o cookie não viaja até o NAS e o EventSource não deixa mandar
+  // header de autorização — lá quem entrega evento é o IPC.
+  if (isTauri()) return () => {};
+
+  let source: EventSource;
+  try {
+    source = new EventSource(`${serverBase()}/api/v1/events`, {
+      withCredentials: true,
+    });
+  } catch {
+    return () => {};
+  }
+
+  source.onmessage = (msg) => {
+    try {
+      handler(JSON.parse(msg.data));
+    } catch {
+      /* keep-alive e afins não são JSON */
+    }
+  };
+
+  return () => source.close();
+}

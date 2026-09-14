@@ -22,13 +22,39 @@ const SUBTREES: &[&str] = &["user/save"];
 fn server_binary() -> Option<PathBuf> {
     // O test roda com CWD no crate; o target fica na raiz do workspace.
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent()?.parent()?;
-    for name in ["save-sync-server", "save-sync-server.exe"] {
-        let candidate = root.join("target/debug").join(name);
-        if candidate.is_file() {
-            return Some(candidate);
+    let bin = ["save-sync-server", "save-sync-server.exe"]
+        .iter()
+        .map(|name| root.join("target/debug").join(name))
+        .find(|p| p.is_file())?;
+
+    warn_if_stale(&bin, &root.join("apps/server/src"));
+    Some(bin)
+}
+
+/// `cargo test -p save-sync-core` **não** rebuilda o binário do server — ele
+/// não é dependência deste crate. Rodar contra um binário velho produz
+/// falhas que parecem bug do client e não são; já aconteceu uma vez. O aviso
+/// é ruidoso de propósito.
+fn warn_if_stale(bin: &Path, src_dir: &Path) {
+    let Ok(bin_time) = bin.metadata().and_then(|m| m.modified()) else {
+        return;
+    };
+    let newest = std::fs::read_dir(src_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.metadata().ok()?.modified().ok())
+        .max();
+
+    if let Some(src_time) = newest {
+        if src_time > bin_time {
+            eprintln!(
+                "\n!!! target/debug/save-sync-server está mais velho que apps/server/src.\n\
+                 !!! Rode `cargo build -p save-sync-server` — este teste roda o binário,\n\
+                 !!! e cargo test não o reconstrói sozinho.\n"
+            );
         }
     }
-    None
 }
 
 struct Server {

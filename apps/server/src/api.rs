@@ -1,10 +1,11 @@
 //! Handlers HTTP do protocolo de sync. Contrato em `docs/protocol.md`.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use axum::body::Bytes;
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::{header, request::Parts, HeaderMap, StatusCode};
+use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
@@ -28,6 +29,27 @@ const SESSION_TTL_MS: i64 = 60 * 60 * 1000;
 pub struct AppState {
     pub conn: Mutex<Connection>,
     pub store: Store,
+    /// Title DBs centralizadas. Antes cada instalação baixava 93 MB e
+    /// mantinha atualizado sozinha; agora vivem num lugar só e os clients
+    /// consultam por API — o client Android já nasce sem esse peso.
+    pub titles: RwLock<save_sync_core::titledb::TitleDb>,
+    pub ps2: RwLock<save_sync_core::ps2db::Ps2Db>,
+    pub data_dir: std::path::PathBuf,
+    /// Canal de eventos pro SSE. `broadcast` porque pode haver várias abas
+    /// e o client de PC abertos ao mesmo tempo, e um evento perdido por
+    /// receptor lento é melhor que um receptor segurando o commit.
+    pub events: tokio::sync::broadcast::Sender<String>,
+}
+
+impl AppState {
+    /// Publica um evento pra quem estiver ouvindo o SSE. Falha (ninguém
+    /// ouvindo) é silenciosa de propósito: o evento é notificação, não
+    /// parte da transação.
+    pub fn emit(&self, kind: &str, payload: serde_json::Value) {
+        let _ = self
+            .events
+            .send(json!({ "type": kind, "payload": payload }).to_string());
+    }
 }
 
 // ─── erros ──────────────────────────────────────────────────────────────
@@ -362,6 +384,20 @@ async fn list_emulators(
     Ok(Json(json!({ "emulators": out })))
 }
 
+/// Troca o id cru pelo nome do jogo quando a DB do emulador conhece.
+/// Enquanto a DB não carregou, o id cru fica — a UI já sabe exibir assim.
+fn resolve_titles(state: &AppState, emu: &str, entries: &mut [save_sync_core::saves::SaveEntry]) {
+    if emu != "eden" {
+        return;
+    }
+    let Ok(titles) = state.titles.read() else { return };
+    for e in entries {
+        if let Some(name) = titles.map.get(&e.raw_id.to_uppercase()) {
+            e.title = name.clone();
+        }
+    }
+}
+
 async fn list_saves(
     State(state): State<Arc<AppState>>,
     _: Viewer,
@@ -370,11 +406,89 @@ async fn list_saves(
     check_emulator(&emu)?;
     // Reusa o mesmo parser do client — a árvore viva tem a estrutura que
     // `core::saves` já sabe ler, porque foi ela que o sync replicou.
-    let saves = save_sync_core::saves::list_saves(
+    let mut saves = save_sync_core::saves::list_saves(
         &emu,
         &state.store.live_root(&emu).to_string_lossy(),
     );
+    resolve_titles(&state, &emu, &mut saves);
     Ok(Json(json!({ "saves": saves })))
+}
+
+// ─── title DBs ──────────────────────────────────────────────────────────
+
+async fn title_db_status(
+    State(state): State<Arc<AppState>>,
+    _: Viewer,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let (switch_count, switch_at) = {
+        let t = state.titles.read().map_err(|_| ApiError::internal("lock"))?;
+        (t.map.len(), t.last_update.map(|d| d.to_rfc3339()))
+    };
+    let (ps2_count, ps2_at) = {
+        let p = state.ps2.read().map_err(|_| ApiError::internal("lock"))?;
+        (p.map.len(), p.last_update.map(|d| d.to_rfc3339()))
+    };
+    Ok(Json(json!({
+        "switch": { "count": switch_count, "updated_at": switch_at },
+        "ps2": { "count": ps2_count, "updated_at": ps2_at },
+    })))
+}
+
+async fn refresh_title_db(
+    State(state): State<Arc<AppState>>,
+    User(_): User,
+    Path(which): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    match which.as_str() {
+        "switch" | "ps2" => {}
+        _ => return Err(ApiError::new(StatusCode::NOT_FOUND, "unknown_title_db")),
+    }
+
+    let state2 = Arc::clone(&state);
+    let which2 = which.clone();
+    // Download de 83 MB não pode segurar a resposta HTTP. Quem quiser
+    // acompanhar escuta o SSE.
+    tokio::spawn(async move {
+        state2.emit("title-db-status", json!({ "db": which2, "status": "refreshing" }));
+        let result = crate::title_dbs::refresh(&state2, &which2).await;
+        match result {
+            Ok(count) => state2.emit(
+                "title-db-status",
+                json!({ "db": which2, "status": "ready", "count": count }),
+            ),
+            Err(e) => state2.emit(
+                "title-db-status",
+                json!({ "db": which2, "status": "error", "detail": e }),
+            ),
+        }
+    });
+
+    Ok(Json(json!({ "status": "refreshing" })))
+}
+
+// ─── eventos (SSE) ──────────────────────────────────────────────────────
+
+/// Stream de eventos do server. Substitui os `emit` do Tauri pro que é
+/// estado compartilhado: commit de outro device, progresso de refresh das
+/// DBs. O client de PC continua usando IPC pro que é local dele.
+async fn events(
+    State(state): State<Arc<AppState>>,
+    _: Viewer,
+) -> Sse<impl futures::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    use futures::StreamExt;
+
+    let rx = state.events.subscribe();
+    let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|msg| async move {
+        // Receptor lento perde evento em vez de segurar o canal; o próximo
+        // evento traz o estado de novo.
+        msg.ok().map(|data| Ok(Event::default().data(data)))
+    });
+
+    Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(std::time::Duration::from_secs(15))
+            .text("ping"),
+    )
 }
 
 async fn get_save(
@@ -795,6 +909,17 @@ async fn commit(
     conn.execute("DELETE FROM sessions WHERE id = ?1", params![req.session])
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
+    // Retenção é best-effort e roda depois do commit: o que importa é o
+    // dado ter entrado; apagar snapshot velho é ganho, e falhar nisso não
+    // pode desfazer um sync que deu certo.
+    let _ = prune_history(&state, &conn, &emu, &history);
+
+    drop(conn);
+    state.emit(
+        "emulator-changed",
+        json!({ "id": emu, "rev": new_rev, "device": device }),
+    );
+
     Ok(Json(CommitResponse {
         new_rev,
         applied: json!({
@@ -804,6 +929,44 @@ async fn commit(
         }),
     }))
 }
+
+/// Aplica a política de retenção: apaga snapshots velhos demais ou acima do
+/// teto de tamanho, e depois poda tombstones que já passaram da janela.
+fn prune_history(
+    state: &AppState,
+    conn: &Connection,
+    emu: &str,
+    history: &HistorySettings,
+) -> Result<(), String> {
+    if history.enabled {
+        let backend = state.store.backend(emu);
+        save_sync_core::history::prune_history(&backend, history)?;
+    }
+
+    // Tombstone que passou da janela some, e o `min_valid_rev` sobe junto —
+    // devices parados desde antes disso passam a receber `410 resync_required`
+    // em vez de ressuscitar arquivo apagado.
+    let cutoff_ms = auth::now_ms() - TOMBSTONE_TTL_MS;
+    let cutoff_rev: Option<i64> = conn
+        .query_row(
+            "SELECT MAX(rev) FROM file_index
+             WHERE emulator_id = ?1 AND deleted = 1 AND mtime < ?2",
+            params![emu, cutoff_ms],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten();
+
+    if let Some(rev) = cutoff_rev {
+        db::prune_tombstones(conn, emu, rev as Rev + 1)?;
+    }
+    Ok(())
+}
+
+/// Janela de vida dos tombstones (§7 da spec). Device offline por mais que
+/// isso precisa de resync.
+const TOMBSTONE_TTL_MS: i64 = 90 * 24 * 60 * 60 * 1000;
 
 // ─── sessões ────────────────────────────────────────────────────────────
 
@@ -909,6 +1072,9 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/v1/emulators/{emu}/saves/{raw_id}", get(get_save))
         .route("/api/v1/emulators/{emu}/settings", get(get_settings).put(set_settings))
         .route("/api/v1/emulators/{emu}/conflicts", get(list_conflicts))
+        .route("/api/v1/title-dbs", get(title_db_status))
+        .route("/api/v1/title-dbs/{which}/refresh", post(refresh_title_db))
+        .route("/api/v1/events", get(events))
         .route("/api/v1/pair", post(pair))
         .route("/api/v1/sync/{emu}/plan", post(plan))
         .route("/api/v1/sync/{emu}/blob", put(put_blob).get(get_blob))

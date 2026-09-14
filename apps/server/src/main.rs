@@ -1,8 +1,7 @@
 //! Server do save-sync.
 //!
-//! Estado atual: esqueleto. Sobe o HTTP, serve a SPA buildada de `apps/web`
-//! e responde `/health`. A API de sync, o login e o histórico entram nas
-//! fases seguintes — ver o roadmap no README.
+//! Sobe o HTTP, serve a SPA de `apps/web`, atende o protocolo de sync
+//! (`docs/protocol.md`) e centraliza as title DBs.
 //!
 //! Duas variáveis de ambiente controlam o processo (defaults pensados pro
 //! container, onde os dois caminhos são volumes):
@@ -14,6 +13,7 @@ mod api;
 mod auth;
 mod db;
 mod storage;
+mod title_dbs;
 mod users;
 
 use std::net::SocketAddr;
@@ -129,10 +129,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // Carrega do cache em disco o que já existe; o que faltar é baixado em
+    // background depois que o HTTP subir.
+    let (titles, ps2) = title_dbs::load_cached(&data_dir);
+    let (events, _) = tokio::sync::broadcast::channel(256);
+
     let state = Arc::new(api::AppState {
         conn: Mutex::new(conn),
         store: storage::Store::new(&data_dir),
+        titles: std::sync::RwLock::new(titles),
+        ps2: std::sync::RwLock::new(ps2),
+        data_dir: data_dir.clone(),
+        events,
     });
+
+    title_dbs::ensure_in_background(Arc::clone(&state));
 
     // A SPA é client-side routed: qualquer path desconhecido cai no
     // index.html e o SvelteKit resolve a rota no browser.
@@ -145,7 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = Router::new()
         .route("/health", get(health))
-        .merge(api::routes(state))
+        .merge(api::routes(Arc::clone(&state)))
         .fallback_service(spa);
 
     tracing::info!(%addr, web = %web_dir.display(), data = %data_dir.display(), "save-sync-server");
