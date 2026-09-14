@@ -10,7 +10,7 @@ Monorepo com três entregáveis em volta de um núcleo compartilhado:
 |---|---|---|
 | `apps/server` | Server que roda em Docker no NAS. Dono do storage, do índice, do histórico e das title DBs, com login e SSE. | funcional |
 | `apps/client-pc` | Client de PC: UI Tauri 2 + agente local (watcher de filesystem e de processo). | funcional |
-| `apps/android` | Client Android nativo (Kotlin). | não iniciado |
+| `apps/android` | Client Android. O protocolo está implementado e testado (`protocol/`, Kotlin/JVM); o app em si depende de um aparelho — ver o README de lá. | parcial |
 | `apps/web` | UI SvelteKit — servida pelo server e embutida no client de PC. | funcional |
 | `crates/core` | Domínio compartilhado: detecção, parsing de saves, backends, rclone. Zero Tauri. | funcional |
 
@@ -175,7 +175,8 @@ save-sync/
 │   │   ├── db.rs                  # índice de arquivos, devices, sessões
 │   │   ├── storage.rs             # validação de path, staging, commit atômico
 │   │   └── auth.rs                # tokens de device e códigos de pareamento
-│   └── android/                   # client Kotlin (placeholder)
+│   └── android/                   # client Android
+│       └── protocol/              # Kotlin/JVM — protocolo, testado vs. o server
 │
 ├── docker/                        # Dockerfile arm64 + compose pro NAS
 ├── scripts/
@@ -628,7 +629,7 @@ Toggle cicla os 3, persiste em `localStorage`. Glyph no botão indica o próximo
 - [x] **Server — title DBs, SSE e retenção** ([#5](https://github.com/Vinny1892/save-manual/issues/5)): as bases de título vivem só no server (os clients pararam de baixar 93 MB cada), eventos por SSE, e retenção + poda de tombstone rodando ao fim de cada commit
 - [ ] **Web UI**: transporte HTTP (`invoke` → `fetch`, `listen` → `EventSource`), tela de login, navegador de diretórios server-side no lugar do picker nativo
 - [x] **Client de PC** ([#8](https://github.com/Vinny1892/save-manual/issues/8)): fala o protocolo HTTP — varredura com reuso de hash, baseline no SQLite local, pareamento por código. Sem server pareado, segue no caminho antigo (rclone)
-- [ ] **Client Android** (Kotlin): bloqueado pela restrição de `Android/data` — ver `apps/android/README.md`
+- [~] **Client Android** ([#9](https://github.com/Vinny1892/save-manual/issues/9)): o módulo `protocol/` em Kotlin está pronto e testado contra o server Rust; o app Android espera um aparelho, porque qual estratégia de acesso usar (SAF, Shizuku ou caminho direto) depende dele — ver `apps/android/README.md`
 - [ ] OAuth flow (Drive, Dropbox, OneDrive) via `config/create` + callback HTTP
 - [ ] Duckstation (PS1) — list-only, similar ao pcsx2
 - [x] Corrigido o pacote do eden Android em `detect.rs` ([#10](https://github.com/Vinny1892/save-manual/issues/10)): era `org.eden.android`, é `dev.eden.eden_emulator`
@@ -724,7 +725,7 @@ cargo test -p save-sync-server  # índice, storage e auth
 cargo build -p save-sync-server && bash scripts/e2e-protocol.sh
 ```
 
-Cobertura atual: **244 testes** — 136 unitários em `crates/core`, 75 em `apps/server`, 2 de integração client↔server (`crates/core/tests/sync_e2e.rs`), mais **31 checagens end-to-end** no `scripts/e2e-protocol.sh`. O client de PC não tem teste próprio porque não tem lógica própria — virou camada fina sobre o core.
+Cobertura atual: **250 testes** — 244 em Rust e 6 em Kotlin (`apps/android/protocol`, dos quais 2 são integração contra o binário do server). Detalhe do lado Rust: **244 testes** — 136 unitários em `crates/core`, 75 em `apps/server`, 2 de integração client↔server (`crates/core/tests/sync_e2e.rs`), mais **31 checagens end-to-end** no `scripts/e2e-protocol.sh`. O client de PC não tem teste próprio porque não tem lógica própria — virou camada fina sobre o core.
 
 | Módulo | Cobertura |
 |---|---|

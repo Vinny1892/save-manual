@@ -24,6 +24,8 @@ vite.config.ts.timestamp-*
 
 # build output do client Android
 /apps/android/build
+/apps/android/*/build
+/apps/android/.kotlin
 /apps/android/.gradle
 /apps/android/local.properties
 
